@@ -1,2 +1,3 @@
 - [Poker Terminal Telegram delivery](poker-terminal-telegram.md) — chat_id auto-discovery via getUpdates + local JSON persistence, dedup pattern for push notifications
 - [Poker Terminal bluff heuristic](poker-terminal-bluff-heuristic.md) — bet-sizing/board/street heuristic, not mind-reading; scope and caveats
+- [Poker Terminal OCR reliability](poker-terminal-ocr-reliability.md) — safeguards against misread cards (dup-check, empty-region filter, 2-frame confirm, manual override) and what's still manual-only

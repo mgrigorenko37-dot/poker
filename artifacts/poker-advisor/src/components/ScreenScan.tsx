@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils';
 import { runMonteCarloSim, parseCard, type Card } from '@/lib/poker';
 import { getFullAdvice, type FullAdvice, type Position } from '@/lib/poker-gto';
 import { TelegramSetup } from '@/components/TelegramSetup';
+import { CardPicker } from '@/components/CardPicker';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Phase = 'idle' | 'requesting' | 'calibrating' | 'loading-ocr' | 'scanning';
@@ -147,6 +148,24 @@ function regionFingerprint(src: HTMLCanvasElement, cx: number, cy: number, cw: n
   return bits.join(',');
 }
 
+// Heuristic: is this region likely blank felt/background rather than a real card?
+// Real card faces (light background OR strong rank/suit contrast) fail this test;
+// only dark + very uniform regions (typical of an empty table slot) are flagged empty.
+// Deliberately conservative — when unsure, we still attempt OCR rather than hide a real card.
+function looksEmpty(cardC: HTMLCanvasElement): boolean {
+  const ctx = cardC.getContext('2d')!;
+  const { data } = ctx.getImageData(0, 0, cardC.width, cardC.height);
+  let sum = 0, sumSq = 0;
+  const n = data.length / 4;
+  for (let i = 0; i < data.length; i += 4) {
+    const lum = (data[i] + data[i + 1] + data[i + 2]) / 3;
+    sum += lum; sumSq += lum * lum;
+  }
+  const mean = sum / n;
+  const variance = sumSq / n - mean * mean;
+  return mean < 120 && variance < 200;
+}
+
 function frameDiff(prev: Uint8ClampedArray, curr: Uint8ClampedArray, thresh = 40): number {
   const step = 8 * 4, len = Math.min(prev.length, curr.length);
   let diff = 0, total = 0;
@@ -169,29 +188,62 @@ const suitCls  = (s: string) => s === 'h' || s === 'd' ? 'text-red-400' : 'text-
 const rankLabel = (r: number) => ({ 14:'A',13:'K',12:'Q',11:'J',10:'T' }[r] ?? String(r));
 
 // Process a list of regions with one worker (sequential within worker, safe)
+// Two safeguards against misreads:
+//  1. A blank/felt-looking region is treated as "no card" without OCR.
+//  2. A CHANGED reading is only committed after it appears twice in a row
+//     (one-tick debounce) — a single flickery OCR pass can't flip the slot,
+//     which matters because a bad flop card silently corrupts every downstream calc.
+// A manual override (user tapped to correct a misread) short-circuits both,
+// staying in effect until the underlying pixels actually change.
 async function processRegions(
   worker: Worker,
   src: HTMLCanvasElement,
   regs: CardRegion[],
   cardW: number, cardH: number,
   fps: Map<string, { fp: string; card: Card | null }>,
+  pending: Map<string, { fp: string; card: Card | null }>,
+  overrides: Map<string, { fp: string; card: Card | null }>,
 ): Promise<(Card | null)[]> {
   const results: (Card | null)[] = [];
   for (const region of regs) {
     const key = region.label;
     const fp  = regionFingerprint(src, region.cx, region.cy, cardW, cardH);
+
+    const ov = overrides.get(key);
+    if (ov?.fp === fp) { fps.set(key, ov); pending.delete(key); results.push(ov.card); continue; }
+    if (ov) overrides.delete(key); // pixels moved on — manual fix no longer applies
+
     const cached = fps.get(key);
     if (cached?.fp === fp) { results.push(cached.card); continue; } // no change
 
     const cardC = extractCardRegion(src, region.cx, region.cy, cardW, cardH);
+    if (looksEmpty(cardC)) {
+      fps.set(key, { fp, card: null });
+      pending.delete(key);
+      results.push(null);
+      continue;
+    }
+
     const rankC = extractRankArea(cardC);
     const { data } = await worker.recognize(rankC);
     const rank = parseRank(data.text.trim());
     const suit = detectSuit(cardC);
     let card: Card | null = null;
     if (rank) { try { card = parseCard(`${rank}${suit}`); } catch {} }
-    fps.set(key, { fp, card });
-    results.push(card);
+
+    const pend = pending.get(key);
+    if (pend && card && pend.card && pend.card.rank === card.rank && pend.card.suit === card.suit) {
+      fps.set(key, { fp, card });   // confirmed twice → commit
+      pending.delete(key);
+      results.push(card);
+    } else if (!card && pend && pend.card === null) {
+      fps.set(key, { fp, card: null }); // confirmed empty twice
+      pending.delete(key);
+      results.push(null);
+    } else {
+      pending.set(key, { fp, card });   // first sighting — wait for confirmation
+      results.push(cached?.card ?? null);
+    }
   }
   return results;
 }
@@ -204,6 +256,10 @@ export function ScreenScan() {
   const [advice, setAdvice]         = useState<FullAdvice | null>(null);
   const [holeCards, setHoleCards]   = useState<Card[]>([]);
   const [boardCards, setBoardCards] = useState<Card[]>([]);
+  // Parallel arrays of originating region labels (e.g. 'Board 3'), so a tap-to-correct
+  // on a displayed card always targets the right slot even if earlier slots are empty.
+  const [holeLabels, setHoleLabels]   = useState<string[]>([]);
+  const [boardLabels, setBoardLabels] = useState<string[]>([]);
   const [error, setError]           = useState<string | null>(null);
   const [scanCount, setScanCount]   = useState(0);
   const [analyzing, setAnalyzing]   = useState(false);
@@ -226,8 +282,13 @@ export function ScreenScan() {
   const scanLoopRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevPixels   = useRef<Uint8ClampedArray | null>(null);
   const analyzingRef = useRef(false);
-  // Per-region fingerprint cache
+  // Per-region fingerprint cache (confirmed), pending (awaiting 2nd-read confirmation),
+  // and manual overrides (user tap-to-correct, valid until the region's pixels change)
   const fingerprintCache = useRef<Map<string, { fp: string; card: Card | null }>>(new Map());
+  const pendingCache      = useRef<Map<string, { fp: string; card: Card | null }>>(new Map());
+  const overridesCache    = useRef<Map<string, { fp: string; card: Card | null }>>(new Map());
+  const lastGoodRef       = useRef<{ hole: Card[]; board: Card[]; holeLabels: string[]; boardLabels: string[] }>({ hole: [], board: [], holeLabels: [], boardLabels: [] });
+  const [dupWarning, setDupWarning] = useState<string | null>(null);
 
   useEffect(() => {
     diffCanvas.current = document.createElement('canvas');
@@ -243,6 +304,9 @@ export function ScreenScan() {
     streamRef.current = null;
     prevPixels.current = null;
     fingerprintCache.current.clear();
+    pendingCache.current.clear();
+    overridesCache.current.clear();
+    lastGoodRef.current = { hole: [], board: [], holeLabels: [], boardLabels: [] };
     setPhase('idle');
     setRegions([]);
     setCalStep(0);
@@ -342,6 +406,36 @@ export function ScreenScan() {
     }
   }, []);
 
+  // ── Manual correction ─────────────────────────────────────────────────────
+  // Tap a detected card to fix a misread rank/suit. The override sticks until
+  // the region's pixels actually change (new card dealt), tracked via its
+  // current fingerprint so auto-detection resumes cleanly afterwards.
+  // Rebuilds hole/board arrays from the confirmed cache by slot label (rather
+  // than splicing the already-compacted display arrays) so a correction to
+  // one slot can't shift or mislabel an unrelated card.
+  const rebuildFromCache = useCallback(() => {
+    const hole: Card[] = [], holeL: string[] = [];
+    const board: Card[] = [], boardL: string[] = [];
+    for (const step of CALIBRATION_STEPS) {
+      const entry = fingerprintCache.current.get(step.label);
+      if (!entry?.card) continue;
+      if (step.label.startsWith('Hole')) { hole.push(entry.card); holeL.push(step.label); }
+      else { board.push(entry.card); boardL.push(step.label); }
+    }
+    setHoleCards(hole); setHoleLabels(holeL);
+    setBoardCards(board); setBoardLabels(boardL);
+    lastGoodRef.current = { hole, board, holeLabels: holeL, boardLabels: boardL };
+  }, []);
+
+  const handleManualOverride = useCallback((key: string, card: Card | null) => {
+    const fp = fingerprintCache.current.get(key)?.fp;
+    if (!fp) return;
+    overridesCache.current.set(key, { fp, card });
+    fingerprintCache.current.set(key, { fp, card });
+    pendingCache.current.delete(key);
+    rebuildFromCache();
+  }, [rebuildFromCache]);
+
   // ── Capture frame ─────────────────────────────────────────────────────────
   const captureToCanvas = useCallback((): HTMLCanvasElement | null => {
     const video = videoRef.current, canvas = canvasRef.current;
@@ -367,16 +461,43 @@ export function ScreenScan() {
 
       // Run both workers in parallel
       const [holeResults, boardResults] = await Promise.all([
-        processRegions(w1, canvas, holeRegs,  cardW, cardH, fingerprintCache.current),
-        processRegions(w2, canvas, boardRegs, cardW, cardH, fingerprintCache.current),
+        processRegions(w1, canvas, holeRegs,  cardW, cardH, fingerprintCache.current, pendingCache.current, overridesCache.current),
+        processRegions(w2, canvas, boardRegs, cardW, cardH, fingerprintCache.current, pendingCache.current, overridesCache.current),
       ]);
 
-      const hole  = holeResults.filter((c): c is Card => c !== null);
-      const board = boardResults.filter((c): c is Card => c !== null);
-      setHoleCards(hole);
-      setBoardCards(board);
+      const compact = (results: (Card | null)[], srcRegs: CardRegion[]) => {
+        const cards: Card[] = [], labels: string[] = [];
+        results.forEach((c, i) => { if (c) { cards.push(c); labels.push(srcRegs[i].label); } });
+        return { cards, labels };
+      };
+      let { cards: hole, labels: holeLbls }   = compact(holeResults, holeRegs);
+      let { cards: board, labels: boardLbls } = compact(boardResults, boardRegs);
 
-      if (hole.length === 2) {
+      // Sanity check: the same physical card can never appear twice (as two hole
+      // cards, or shared between hole and board) — that's only possible from a
+      // misread. If we see a duplicate, distrust this frame's reading entirely
+      // and fall back to the last known-good state rather than feeding a
+      // physically impossible hand into the equity math.
+      const seen = new Set<string>();
+      let hasDup = false;
+      for (const c of [...hole, ...board]) {
+        const k = `${c.rank}${c.suit}`;
+        if (seen.has(k)) { hasDup = true; break; }
+        seen.add(k);
+      }
+      if (hasDup) {
+        setDupWarning(`Обнаружен дубль карты — кадр пропущен (${new Date().toLocaleTimeString('ru')})`);
+        hole = lastGoodRef.current.hole; holeLbls = lastGoodRef.current.holeLabels;
+        board = lastGoodRef.current.board; boardLbls = lastGoodRef.current.boardLabels;
+      } else {
+        setDupWarning(null);
+        lastGoodRef.current = { hole, board, holeLabels: holeLbls, boardLabels: boardLbls };
+      }
+
+      setHoleCards(hole); setHoleLabels(holeLbls);
+      setBoardCards(board); setBoardLabels(boardLbls);
+
+      if (hole.length === 2 && !hasDup) {
         // Fewer unknown cards later in the hand → fewer iterations needed for
         // a stable estimate, so we spend less time simulating when speed matters most.
         const iterations = board.length === 0 ? 400 : board.length === 3 ? 1500 : board.length === 4 ? 900 : 300;
@@ -682,31 +803,55 @@ export function ScreenScan() {
                 </div>
               )}
 
-              {/* Detected cards */}
+              {/* Duplicate-card guard */}
+              {dupWarning && (
+                <div className="bg-red-950/50 border border-red-800/50 rounded-lg p-3">
+                  <p className="text-red-400 text-xs font-bold">⚠ {dupWarning}</p>
+                  <p className="text-red-500/70 text-[10px] mt-1">Одна и та же карта не может встретиться дважды — показываю прошлое надёжное состояние.</p>
+                </div>
+              )}
+
+              {/* Detected cards — tap any card to correct a misread */}
               {(holeCards.length > 0 || boardCards.length > 0) && (
                 <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 space-y-2">
                   {holeCards.length > 0 && (
                     <div>
-                      <p className="text-zinc-600 text-xs uppercase tracking-widest mb-1.5">Мои карты</p>
+                      <p className="text-zinc-600 text-xs uppercase tracking-widest mb-1.5">Мои карты (тапни, чтобы исправить)</p>
                       <div className="flex gap-2">
                         {holeCards.map((c, i) => (
-                          <div key={i} className="w-10 h-14 bg-zinc-100 rounded flex flex-col items-center justify-center border border-zinc-300 shadow">
-                            <span className={cn('text-sm font-black leading-none', suitCls(c.suit))}>{rankLabel(c.rank)}</span>
-                            <span className={cn('text-sm leading-none', suitCls(c.suit))}>{suitSym(c.suit)}</span>
-                          </div>
+                          <CardPicker
+                            key={holeLabels[i] ?? i}
+                            selectedCard={c}
+                            disabledCards={[...holeCards, ...boardCards].filter(x => x !== c)}
+                            onSelect={(card) => handleManualOverride(holeLabels[i], card)}
+                            trigger={
+                              <button className="w-10 h-14 bg-zinc-100 rounded flex flex-col items-center justify-center border border-zinc-300 shadow hover:ring-2 hover:ring-emerald-500 transition-shadow">
+                                <span className={cn('text-sm font-black leading-none', suitCls(c.suit))}>{rankLabel(c.rank)}</span>
+                                <span className={cn('text-sm leading-none', suitCls(c.suit))}>{suitSym(c.suit)}</span>
+                              </button>
+                            }
+                          />
                         ))}
                       </div>
                     </div>
                   )}
                   {boardCards.length > 0 && (
                     <div>
-                      <p className="text-zinc-600 text-xs uppercase tracking-widest mb-1.5">Борд</p>
+                      <p className="text-zinc-600 text-xs uppercase tracking-widest mb-1.5">Борд (тапни, чтобы исправить)</p>
                       <div className="flex gap-1 flex-wrap">
                         {boardCards.map((c, i) => (
-                          <div key={i} className="w-9 h-12 bg-zinc-100 rounded flex flex-col items-center justify-center border border-zinc-300 shadow">
-                            <span className={cn('text-xs font-black leading-none', suitCls(c.suit))}>{rankLabel(c.rank)}</span>
-                            <span className={cn('text-xs leading-none', suitCls(c.suit))}>{suitSym(c.suit)}</span>
-                          </div>
+                          <CardPicker
+                            key={boardLabels[i] ?? i}
+                            selectedCard={c}
+                            disabledCards={[...holeCards, ...boardCards].filter(x => x !== c)}
+                            onSelect={(card) => handleManualOverride(boardLabels[i], card)}
+                            trigger={
+                              <button className="w-9 h-12 bg-zinc-100 rounded flex flex-col items-center justify-center border border-zinc-300 shadow hover:ring-2 hover:ring-emerald-500 transition-shadow">
+                                <span className={cn('text-xs font-black leading-none', suitCls(c.suit))}>{rankLabel(c.rank)}</span>
+                                <span className={cn('text-xs leading-none', suitCls(c.suit))}>{suitSym(c.suit)}</span>
+                              </button>
+                            }
+                          />
                         ))}
                       </div>
                     </div>
@@ -758,6 +903,8 @@ export function ScreenScan() {
                     const saved = loadCalibration();
                     if (saved) saveCalibration(saved.regions, v);
                     fingerprintCache.current.clear(); // force re-OCR
+                    pendingCache.current.clear();
+                    overridesCache.current.clear();
                   }}
                   className="w-full accent-emerald-500"
                 />
@@ -780,8 +927,12 @@ export function ScreenScan() {
                 onClick={() => {
                   if (scanLoopRef.current) { clearInterval(scanLoopRef.current); scanLoopRef.current = null; }
                   fingerprintCache.current.clear();
+                  pendingCache.current.clear();
+                  overridesCache.current.clear();
+                  lastGoodRef.current = { hole: [], board: [], holeLabels: [], boardLabels: [] };
                   setPhase('calibrating'); setRegions([]); setCalStep(0);
                   setAdvice(null); setHoleCards([]); setBoardCards([]);
+                  setHoleLabels([]); setBoardLabels([]); setDupWarning(null);
                   prevPixels.current = null;
                 }}
                 className="w-full py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 rounded-lg text-xs text-zinc-500 transition-colors"
