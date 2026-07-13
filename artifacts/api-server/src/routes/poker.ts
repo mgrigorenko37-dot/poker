@@ -1,46 +1,46 @@
 import { Router, type IRouter } from "express";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import OpenAI from "openai";
 import { ScanCardsBody } from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
-if (!process.env.GEMINI_API_KEY) {
-  throw new Error("GEMINI_API_KEY environment variable is required");
+if (!process.env.OPENROUTER_API_KEY) {
+  throw new Error("OPENROUTER_API_KEY environment variable is required");
 }
 
-const genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// OpenRouter uses OpenAI-compatible API — free vision models, no quotas
+const openai = new OpenAI({
+  apiKey: process.env.OPENROUTER_API_KEY,
+  baseURL: "https://openrouter.ai/api/v1",
+  defaultHeaders: {
+    "HTTP-Referer": "https://pokerterminal.app",
+    "X-Title": "Poker Terminal",
+  },
+});
 
-const prompt = `You are analyzing a poker game screenshot. Extract the following information:
+const prompt = `You are analyzing a poker game screenshot (TON Poker Telegram Mini App).
 
-1. The player's OWN hole cards (the 2 face-up cards belonging to the user, usually at the bottom of the screen).
-2. Community/board cards (face-up cards in the center of the table - flop, turn, river).
-3. Pot size (total chips/coins in the pot, if visible as a number).
-4. Bet to call (amount the player needs to call, if a pending bet/raise is shown).
-5. Number of players at the table (count visible player seats).
+Extract:
+1. Player's OWN hole cards — 2 face-up cards at the BOTTOM of the screen belonging to the user.
+2. Community/board cards — face-up cards in the CENTER of the table (flop/turn/river).
+3. Pot size — total chips visible in the pot area.
+4. Bet to call — amount shown that player must call (if any pending bet).
+5. Number of players — count of player seats visible at the table.
 
-Card format rules:
-- Ranks: A, K, Q, J, T (for 10), 9, 8, 7, 6, 5, 4, 3, 2
-- Suits: h (hearts ♥), d (diamonds ♦), c (clubs ♣), s (spades ♠)
-- Examples: "Ah" = Ace of Hearts, "Ks" = King of Spades, "Td" = Ten of Diamonds
+Card format:
+- Rank: A K Q J T 9 8 7 6 5 4 3 2
+- Suit: h=hearts d=diamonds c=clubs s=spades
+- Example: "Ah"=Ace of Hearts "Ks"=King of Spades "Td"=Ten of Diamonds
 
-IMPORTANT:
-- Only include cards that are clearly visible and face-up. Do NOT guess face-down cards.
-- If the player's own cards are face-down or not visible, return empty holeCards array.
-- If no community cards are shown yet (pre-flop), return empty communityCards array.
-- For TON Poker: the player's own cards are shown at the bottom of the table.
+Rules:
+- Only include CLEARLY VISIBLE face-up cards. Never guess face-down cards.
+- If hole cards are face-down, return empty holeCards array.
+- If no board cards yet (pre-flop), return empty communityCards array.
 
-Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):
-{
-  "holeCards": ["Ah", "Ks"],
-  "communityCards": ["2d", "7c", "Qh"],
-  "potSize": 1.50,
-  "betToCall": 0.10,
-  "players": 6,
-  "confidence": 0.9,
-  "rawDescription": "Brief description of what you see"
-}
+Respond ONLY with raw JSON (no markdown, no code blocks):
+{"holeCards":["Ah","Ks"],"communityCards":["2d","7c","Qh"],"potSize":1.50,"betToCall":0.10,"players":6,"confidence":0.9,"rawDescription":"what you see"}
 
-If you cannot detect cards clearly, return confidence 0 and empty arrays.`;
+If cards not visible: {"holeCards":[],"communityCards":[],"potSize":null,"betToCall":null,"players":null,"confidence":0,"rawDescription":"cards not visible"}`;
 
 router.post("/scan-cards", async (req, res): Promise<void> => {
   const parsed = ScanCardsBody.safeParse(req.body);
@@ -52,27 +52,41 @@ router.post("/scan-cards", async (req, res): Promise<void> => {
   const { imageBase64 } = parsed.data;
 
   try {
-    const model = genai.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-    const result = await model.generateContent([
-      {
-        inlineData: {
-          mimeType: "image/jpeg",
-          data: imageBase64,
+    const response = await openai.chat.completions.create({
+      // Free vision model on OpenRouter — no quotas
+      model: "qwen/qwen2-vl-7b-instruct:free",
+      max_tokens: 300,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:image/jpeg;base64,${imageBase64}`,
+              },
+            },
+            {
+              type: "text",
+              text: prompt,
+            },
+          ],
         },
-      },
-      prompt,
-    ]);
+      ],
+    });
 
-    const content = result.response.text();
-    req.log.debug({ content }, "Gemini raw response");
+    const content = response.choices[0]?.message?.content ?? "";
+    req.log.debug({ content }, "OpenRouter raw response");
 
-    // Strip markdown code blocks if present
-    const cleaned = content.replace(/```(?:json)?\s*/g, "").replace(/```\s*/g, "").trim();
+    // Strip markdown if present
+    const cleaned = content
+      .replace(/```(?:json)?\s*/g, "")
+      .replace(/```\s*/g, "")
+      .trim();
+
     const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-
     if (!jsonMatch) {
-      req.log.warn({ content }, "No JSON in Gemini response");
+      req.log.warn({ content }, "No JSON in OpenRouter response");
       res.status(500).json({ error: "Could not parse AI response" });
       return;
     }
@@ -89,9 +103,9 @@ router.post("/scan-cards", async (req, res): Promise<void> => {
       rawDescription: data.rawDescription ?? null,
     });
   } catch (err: any) {
-    req.log.error({ err }, "Gemini Vision error");
+    req.log.error({ err }, "OpenRouter Vision error");
     if (err?.status === 429) {
-      res.status(429).json({ error: "Gemini quota exceeded — wait a minute and try again, or increase scan interval" });
+      res.status(429).json({ error: "Rate limit — wait a moment and try again" });
     } else {
       res.status(500).json({ error: "AI analysis failed" });
     }
