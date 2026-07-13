@@ -72,7 +72,7 @@ export function LiveView() {
   const [lastUpdate, setLastUpdate] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
-  const retryRef = useRef<NodeJS.Timeout | null>(null);
+  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
 
   const connect = useCallback(() => {
