@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: poker
+    description: Poker analysis operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /scan-cards:
+    post:
+      operationId: scanCards
+      tags: [poker]
+      summary: Scan poker screenshot with AI vision
+      description: Analyzes a base64 screenshot image using OpenAI Vision to extract poker card information
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanCardsInput"
+      responses:
+        "200":
+          description: Extracted card data from screenshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanCardsResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +66,50 @@ components:
           type: string
       required:
         - status
-
+    ScanCardsInput:
+      type: object
+      required:
+        - imageBase64
+      properties:
+        imageBase64:
+          type: string
+          description: Base64-encoded screenshot image (PNG or JPEG)
+    ScanCardsResult:
+      type: object
+      required:
+        - holeCards
+        - communityCards
+        - confidence
+      properties:
+        holeCards:
+          type: array
+          items:
+            type: string
+          description: "Player's hole cards in format like 'Ah', 'Ks', '2d', 'Tc'"
+        communityCards:
+          type: array
+          items:
+            type: string
+          description: "Community/board cards visible on table"
+        potSize:
+          type: ["number", "null"]
+          description: Detected pot size if visible
+        betToCall:
+          type: ["number", "null"]
+          description: Detected bet amount to call if visible
+        players:
+          type: ["integer", "null"]
+          description: Number of players detected at the table
+        confidence:
+          type: number
+          description: Confidence score 0-1 for the detection
+        rawDescription:
+          type: ["string", "null"]
+          description: Raw description from AI for debugging
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string

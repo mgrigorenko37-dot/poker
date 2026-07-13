@@ -2,12 +2,13 @@ import React, { useState } from 'react';
 import { HandAnalyzer } from '@/components/HandAnalyzer';
 import { PreflopChart } from '@/components/PreflopChart';
 import { HandHistory } from '@/components/HandHistory';
+import { AutoScan } from '@/components/AutoScan';
 import { cn } from '@/lib/utils';
 import { useThemeProvider } from '@/hooks/use-theme';
 
 export default function Home() {
   useThemeProvider();
-  const [activeTab, setActiveTab] = useState<'analyzer' | 'chart' | 'history'>('analyzer');
+  const [activeTab, setActiveTab] = useState<'analyzer' | 'autoscan' | 'chart' | 'history'>('analyzer');
 
   return (
     <div className="min-h-[100dvh] bg-[#0d1117] text-zinc-100 flex flex-col font-mono selection:bg-emerald-900/50">
@@ -25,6 +26,7 @@ export default function Home() {
           <nav className="flex gap-1 bg-zinc-900 p-1 rounded-lg border border-zinc-800">
             {[
               { id: 'analyzer', label: 'Analyzer' },
+              { id: 'autoscan', label: 'Auto-Scan' },
               { id: 'chart', label: 'Preflop' },
               { id: 'history', label: 'History' }
             ].map(tab => (
@@ -48,6 +50,7 @@ export default function Home() {
       {/* MAIN CONTENT */}
       <main className="flex-1 py-8">
         {activeTab === 'analyzer' && <HandAnalyzer />}
+        {activeTab === 'autoscan' && <AutoScan />}
         {activeTab === 'chart' && <PreflopChart />}
         {activeTab === 'history' && <HandHistory />}
       </main>

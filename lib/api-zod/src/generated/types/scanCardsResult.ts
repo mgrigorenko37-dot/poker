@@ -5,14 +5,6 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-export interface HealthStatus {
-  status: string;
-}
-
-export interface ScanCardsInput {
-  /** Base64-encoded screenshot image (PNG or JPEG) */
-  imageBase64: string;
-}
 
 export interface ScanCardsResult {
   /** Player's hole cards in format like 'Ah', 'Ks', '2d', 'Tc' */
@@ -42,8 +34,3 @@ export interface ScanCardsResult {
      */
   rawDescription?: string | null;
 }
-
-export interface ErrorResponse {
-  error: string;
-}
-

@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
+export interface ScanCardsInput {
+  /** Base64-encoded screenshot image (PNG or JPEG) */
+  imageBase64: string;
 }
