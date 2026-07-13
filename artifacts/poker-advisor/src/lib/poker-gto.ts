@@ -398,11 +398,67 @@ export function getRaiseEV(
   winProb: number,
   potSize: number,
   raiseSize: number,
-  foldEquity = 0.3, // estimated % villain folds
+  foldEquity = 0.3, // estimated % that ALL opponents fold to this raise
 ): number {
   // EV raise = foldEquity * pot + (1-foldEquity) * [winProb * (pot + raiseSize*2) - raiseSize]
   const evIfCalled = winProb * (potSize + raiseSize * 2) - raiseSize;
   return foldEquity * potSize + (1 - foldEquity) * evIfCalled;
+}
+
+// ─── Dynamic Fold Equity ────────────────────────────────────────────────────
+// Estimates the probability that ALL opponents fold to a raise/bet, based on
+// bet sizing, board wetness, street, and number of opponents — rather than a
+// single flat constant. This is still a population-level heuristic (no live
+// read on any specific villain), but it captures the big, well-known drivers:
+//  - bigger bets relative to the pot fold out more of a range
+//  - wet/coordinated boards (flush/straight-possible) give villains more
+//    equity to continue with, so they fold less even to big bets
+//  - paired boards hit fewer draws, so non-pairs fold more easily
+//  - every additional opponent must ALSO fold, so fold equity collapses fast
+//    in multiway pots — this is the single biggest factor most heuristics miss
+export function estimateFoldEquity(
+  potSize: number,
+  raiseSize: number,
+  boardCards: Card[],
+  players: number,
+  street: 'preflop' | 'flop' | 'turn' | 'river',
+): number {
+  let perPlayerFold =
+    street === 'preflop' ? 0.45 :
+    street === 'flop'    ? 0.42 :
+    street === 'turn'    ? 0.34 :
+    0.26; // river — villains are pot-committed; folds are rarer but sharper
+
+  // Bigger bets/raises relative to the pot fold out more of a range.
+  const sizingRatio = potSize > 0 ? raiseSize / potSize : 0.5;
+  perPlayerFold += (sizingRatio - 0.5) * 0.3;
+
+  if (street !== 'preflop' && boardCards.length > 0) {
+    const suitCounts: Record<string, number> = {};
+    const rankCounts: Record<number, number> = {};
+    for (const c of boardCards) {
+      suitCounts[c.suit] = (suitCounts[c.suit] || 0) + 1;
+      rankCounts[c.rank] = (rankCounts[c.rank] || 0) + 1;
+    }
+    const maxSuit = Math.max(0, ...Object.values(suitCounts));
+    const ranks = [...new Set(boardCards.map(c => c.rank))].sort((a, b) => a - b);
+    let maxGap = 0;
+    for (let i = 1; i < ranks.length; i++) maxGap = Math.max(maxGap, ranks[i] - ranks[i - 1]);
+    const isConnected = ranks.length >= 2 && maxGap <= 4;
+    const isPaired = Object.values(rankCounts).some(n => n >= 2);
+
+    if (maxSuit >= 3) perPlayerFold -= 0.08;  // flush-possible board
+    if (isConnected) perPlayerFold -= 0.05;   // straight-possible/coordinated board
+    if (isPaired) perPlayerFold += 0.03;      // paired board hits fewer draws
+  }
+
+  perPlayerFold = Math.max(0.1, Math.min(0.75, perPlayerFold));
+
+  // Every opponent still in the hand must ALSO fold for the raise to win it
+  // uncontested — this is why bluffs/thin raises get through far less often
+  // in multiway pots than heads-up.
+  const opponents = Math.max(1, players - 1);
+  return Math.pow(perPlayerFold, opponents);
 }
 
 // ─── Master Advice Function ───────────────────────────────────────────────────
@@ -516,6 +572,12 @@ export function getFullAdvice(
       details.push(draws!.description);
       details.push(`~${draws!.equityRiverClean}% "чистого" equity на дроу (грязных ${draws!.equityRiver}%) — полублеф`);
       if (draws!.antiOutsNote) details.push(draws!.antiOutsNote);
+      if (potSize > 0) {
+        const betSize = potSize * 0.5;
+        const foldEq = estimateFoldEquity(potSize, betSize, boardCards, players, street);
+        const betEV = getRaiseEV(effectiveEquity, potSize, betSize, foldEq);
+        details.push(`Фолд-эквити ~${(foldEq * 100).toFixed(0)}% (${players} игрок${players === 2 ? '' : 'ов'}) — EV ставки: ${betEV > 0 ? '+' : ''}${betEV.toFixed(1)} BB`);
+      }
     } else if (w > 0.50) {
       action = 'CHECK'; displayText = 'CHECK'; color = 'bg-zinc-600';
       details.push(`Win ${(w * 100).toFixed(0)}% — контролируй пот`);
@@ -527,9 +589,24 @@ export function getFullAdvice(
     }
   } else {
     // ── Facing a bet ──
+    // Dynamic fold equity: how likely ALL opponents fold to a raise here,
+    // based on sizing, board texture, street and number of opponents —
+    // replaces a flat assumed constant.
+    const potAfterBet = potSize + betToCall;
+    const raiseIncrement = betToCall * 1.5; // "2.5× bet" total = call (1×) + this increment (1.5×)
+    const foldEquity = estimateFoldEquity(potAfterBet, raiseIncrement, boardCards, players, street);
+    const raiseEV = getRaiseEV(w, potAfterBet, raiseIncrement, foldEquity);
+
     const shouldRaise = (
       (handRank !== null && handRank >= HandRank.FLUSH) ||
       (potOdds !== null && w > potOdds + 0.20)
+    );
+    // Profitable semi-bluff raise: not strong enough by raw equity alone, but
+    // the combination of draw equity + fold equity makes raising +EV and
+    // better than just calling.
+    const isProfitableSemiBluffRaise = (
+      !shouldRaise && hasGoodDraw &&
+      callEV !== null && raiseEV > callEV && raiseEV > 0
     );
     const shouldCall = potOdds !== null && (
       w > potOdds + 0.01 ||
@@ -542,6 +619,14 @@ export function getFullAdvice(
       details.push(`Win ${(w * 100).toFixed(0)}% >> pot odds ${(potOdds! * 100).toFixed(0)}%`);
       if (handName) details.push(handName);
       if (mdf) details.push(`Вилланту защищать ≥ ${(mdf * 100).toFixed(0)}% — давим`);
+      details.push(`Фолд-эквити ~${(foldEquity * 100).toFixed(0)}% (${players} игрок${players === 2 ? '' : 'ов'}) — EV рейза: ${raiseEV > 0 ? '+' : ''}${raiseEV.toFixed(1)} BB`);
+      if (bluffRead) details.push(`Read виллана: ${bluffRead.label.toLowerCase()}`);
+    } else if (isProfitableSemiBluffRaise) {
+      action = 'RAISE'; displayText = 'RAISE (полублеф)'; color = 'bg-teal-600';
+      sizing = '2.5× bet';
+      details.push(draws!.description);
+      details.push(`Фолд-эквити ~${(foldEquity * 100).toFixed(0)}% (${players} игрок${players === 2 ? '' : 'ов'}) + дроу — EV рейза ${raiseEV.toFixed(1)} BB > EV колла ${callEV!.toFixed(1)} BB`);
+      if (draws!.antiOutsNote) details.push(draws!.antiOutsNote);
       if (bluffRead) details.push(`Read виллана: ${bluffRead.label.toLowerCase()}`);
     } else if (shouldCall) {
       action = 'CALL'; displayText = 'CALL'; color = 'bg-blue-600';
