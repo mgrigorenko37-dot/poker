@@ -2,3 +2,4 @@
 - [Poker Terminal bluff heuristic](poker-terminal-bluff-heuristic.md) — bet-sizing/board/street heuristic, not mind-reading; scope and caveats
 - [Poker Terminal OCR reliability](poker-terminal-ocr-reliability.md) — safeguards against misread cards (dup-check, empty-region filter, 2-frame confirm, manual override) and what's still manual-only
 - [Artifact re-registration after GitHub import](artifact-reimport-registration.md) — listArtifacts()/workflows empty post-import despite artifact.toml existing; fix via verifyAndReplaceArtifactToml touch, not createArtifact
+- [Poker Terminal range-vs-range Monte Carlo](poker-terminal-range-vs-range.md) — villain dealt from a range, not "any two"; flat preflop-equity threshold has a known low-board blind spot

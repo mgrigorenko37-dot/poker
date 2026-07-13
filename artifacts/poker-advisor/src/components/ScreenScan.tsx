@@ -744,6 +744,11 @@ export function ScreenScan() {
                       style={{ width: `${advice.equity * 100}%` }}
                     />
                   </div>
+                  {advice.usedRangeVsRange && (
+                    <div className="text-[10px] text-zinc-600 italic mt-1.5">
+                      Против диапазона виллана (~{advice.villainRangePct}% рук)
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -781,7 +786,12 @@ export function ScreenScan() {
                 <div className="bg-teal-950/50 border border-teal-800/50 rounded-lg p-3">
                   <p className="text-teal-400 text-xs font-bold mb-1">ДРОУ</p>
                   <p className="text-teal-300 text-sm">{advice.draws.description}</p>
-                  <p className="text-teal-600 text-xs mt-1">{advice.draws.totalOuts} outs → ~{advice.draws.equityRiver}%</p>
+                  <p className="text-teal-600 text-xs mt-1">
+                    {advice.draws.discountedOuts} чистых outs (из {advice.draws.totalOuts}) → ~{advice.draws.equityRiverClean}%
+                  </p>
+                  {advice.draws.antiOutsNote && (
+                    <p className="text-teal-800 text-xs mt-1 italic">{advice.draws.antiOutsNote}</p>
+                  )}
                 </div>
               )}
 

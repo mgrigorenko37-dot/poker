@@ -232,6 +232,11 @@ export function HandAnalyzer() {
                 <span>Tie: {simResult ? formatProb(simResult.tieProb) : '--%'}</span>
                 <span>Pot Odds: {formatProb(potOdds)}</span>
               </div>
+              {simResult?.usedRangeVsRange && (
+                <div className="mt-2 text-[11px] text-zinc-600 italic">
+                  Симуляция против диапазона виллана (~{simResult.villainRangePct}% рук), не "любые две карты"
+                </div>
+              )}
             </div>
 
             <div className="pt-4 border-t border-zinc-800">

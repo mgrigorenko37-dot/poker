@@ -21,8 +21,12 @@ export interface DrawInfo {
   overCards: number;       // overcards to board
   comboDraws: boolean;     // flush + straight draw
   totalOuts: number;
-  equityTurn: number;      // rule of 2 (1 card to come) %
-  equityRiver: number;     // rule of 4 (2 cards to come) %
+  discountedOuts: number;  // "clean" outs after discounting anti-outs (board-pairing risk, low-end straights)
+  equityTurn: number;      // rule of 2 (1 card to come) % — raw outs
+  equityRiver: number;     // rule of 4 (2 cards to come) % — raw outs
+  equityTurnClean: number;   // rule of 2 using discounted outs %
+  equityRiverClean: number;  // rule of 4 using discounted outs %
+  antiOutsNote: string | null; // explains why outs were discounted, if applicable
   description: string;
 }
 
@@ -40,6 +44,8 @@ export interface FullAdvice {
   sizing: string | null;   // e.g. "75% pot"
   ev: number | null;       // expected value in BB (if pot info available)
   bluffRead: BluffRead | null;
+  usedRangeVsRange: boolean;      // equity sim used a villain range, not "Any Two"
+  villainRangePct: number | null; // approx % of hands the villain range covers
 }
 
 export interface BluffRead {
@@ -198,12 +204,39 @@ export function detectDraws(holeCards: Card[], boardCards: Card[]): DrawInfo | n
 
   const allCards = [...holeCards, ...boardCards];
 
+  // ── Board pairing state (used for anti-outs discounting below) ─────────────
+  const boardRankCounts: Record<number, number> = {};
+  for (const c of boardCards) boardRankCounts[c.rank] = (boardRankCounts[c.rank] || 0) + 1;
+  const boardAlreadyPaired = Object.values(boardRankCounts).some(cnt => cnt >= 2);
+  // Weight for an out card of a given rank: cards that pair the board make it
+  // much more likely a villain holding trips/two pair improves to a full house
+  // (or quads) on the very card we're counting as "our" out.
+  function boardPairWeight(rank: number): number {
+    if (!boardRankCounts[rank]) return 1.0;       // doesn't touch the board
+    return boardAlreadyPaired ? 0 : 0.5;          // board already paired → full-house risk; else moderate risk
+  }
+
   // ── Flush draw ──────────────────────────────────────────────────────────────
   const suitCount: Record<string, number> = {};
   for (const c of allCards) suitCount[c.suit] = (suitCount[c.suit] || 0) + 1;
   const maxSuit = Math.max(...Object.values(suitCount));
   const flushDraw = maxSuit === 4;
   const backdoorFlush = maxSuit === 3;
+
+  const flushSuit = flushDraw
+    ? (Object.entries(suitCount).find(([, cnt]) => cnt === 4)?.[0] as Suit | undefined)
+    : undefined;
+
+  let flushOutsRaw = 0;
+  let flushOutsClean = 0;
+  if (flushSuit) {
+    const usedRanksOfSuit = new Set(allCards.filter(c => c.suit === flushSuit).map(c => c.rank));
+    for (let r = 2; r <= 14; r++) {
+      if (usedRanksOfSuit.has(r as Rank)) continue;
+      flushOutsRaw += 1;
+      flushOutsClean += boardPairWeight(r);
+    }
+  }
 
   // ── Straight draw ───────────────────────────────────────────────────────────
   const rankSet = new Set(allCards.map(c => c.rank));
@@ -213,8 +246,11 @@ export function detectDraws(holeCards: Card[], boardCards: Card[]): DrawInfo | n
 
   let oesd = false;
   let gutshot = false;
+  // Distinct ranks that would complete a straight, tagged with whether they're
+  // the "low" end of an open-ended draw (discounted — a villain with two cards
+  // above ours completes a bigger straight on the same card).
+  const straightOutRanks = new Map<number, { lowEnd: boolean }>();
 
-  // Check every 5-rank window
   for (let lo = 1; lo <= 10; lo++) {
     const hi = lo + 4;
     const inWindow = ranks.filter(r => r >= lo && r <= hi);
@@ -224,47 +260,91 @@ export function detectDraws(holeCards: Card[], boardCards: Card[]): DrawInfo | n
         // All 4 are consecutive → open-ended (missing 1 end)
         const missingLow  = !rankSet.has(lo as Rank);
         const missingHigh = !rankSet.has(hi as Rank);
-        if (missingLow || missingHigh) oesd = true;
+        if (missingLow) { oesd = true; straightOutRanks.set(((lo === 0 ? 14 : lo)), { lowEnd: true }); }
+        if (missingHigh) { oesd = true; straightOutRanks.set(hi, { lowEnd: false }); }
       } else {
         // Gap in the middle → gutshot
-        gutshot = true;
+        const missingRank = [lo, lo + 1, lo + 2, lo + 3, hi].find(r => !rankSet.has(r as Rank));
+        if (missingRank !== undefined) {
+          gutshot = true;
+          straightOutRanks.set(missingRank === 0 ? 14 : missingRank, { lowEnd: false });
+        }
       }
     }
+  }
+
+  let straightOutsRaw = 0;
+  let straightOutsClean = 0;
+  let discountedLowEnd = false;
+  for (const [rank, { lowEnd }] of straightOutRanks) {
+    straightOutsRaw += 1;
+    let weight = boardPairWeight(rank);
+    if (lowEnd) { weight *= 0.85; discountedLowEnd = true; } // nut-low discount
+    straightOutsClean += weight;
   }
 
   // ── Over cards ──────────────────────────────────────────────────────────────
   const maxBoard = Math.max(...boardCards.map(c => c.rank));
   const overCards = holeCards.filter(c => c.rank > maxBoard).length;
 
-  // ── Out count ───────────────────────────────────────────────────────────────
+  // ── Out count (raw, matches the classic "2 and 4" rule) ────────────────────
   let outs = 0;
+  let cleanOuts = 0;
   const descriptions: string[] = [];
+  const antiOutsReasons: string[] = [];
 
-  if (flushDraw)  { outs += 9; descriptions.push('Flush draw (9 outs)'); }
-  if (oesd)       { outs += 8; descriptions.push('OESD (8 outs)'); }
-  else if (gutshot) { outs += 4; descriptions.push('Gutshot (4 outs)'); }
+  if (flushDraw) {
+    outs += flushOutsRaw || 9;
+    cleanOuts += flushOutsClean || 9;
+    descriptions.push(`Flush draw (${flushOutsRaw || 9} outs)`);
+  }
+  if (oesd) {
+    outs += 8;
+    cleanOuts += straightOutsClean || 8;
+    descriptions.push('OESD (8 outs)');
+  } else if (gutshot) {
+    outs += 4;
+    cleanOuts += straightOutsClean || 4;
+    descriptions.push('Gutshot (4 outs)');
+  }
 
   // Combo draw bonus already counted — cap at real outs
-  if (flushDraw && oesd) outs = 15;  // overlap: ~15 unique outs
+  if (flushDraw && oesd) { outs = 15; cleanOuts = Math.min(cleanOuts, 15); }  // overlap: ~15 unique outs
 
-  // Over cards (if no pair yet)
+  // Over cards (if no pair yet) — kept undiscounted, already a rough estimate
   const myHandRank = evaluateHand(holeCards, boardCards)?.handRank ?? -1;
   if (myHandRank < HandRank.PAIR && overCards > 0 && !flushDraw && !oesd && !gutshot) {
     outs += overCards * 3;
+    cleanOuts += overCards * 3;
     descriptions.push(`${overCards} overcards (~${overCards * 3} outs)`);
+  }
+
+  if (boardAlreadyPaired && (flushOutsRaw > flushOutsClean || straightOutsRaw > straightOutsClean)) {
+    antiOutsReasons.push('Борд уже спарен — часть аутов может дать вилланту фулл-хаус, они не считаются');
+  } else if (flushOutsRaw > flushOutsClean || straightOutsRaw > straightOutsClean) {
+    antiOutsReasons.push('Часть аутов спаривает борд — риск сета/двух пар у виллана, вес снижен');
+  }
+  if (discountedLowEnd) {
+    antiOutsReasons.push('Нижний край стрит-дро дисконтирован — виллан может собрать старший стрейт той же картой');
   }
 
   const cardsToGo = 5 - boardCards.length;
   const equityTurn   = Math.min(outs * 2, 99);  // rule of 2
   const equityRiver  = Math.min(outs * 4, 99);  // rule of 4
+  const equityTurnClean  = Math.min(cleanOuts * 2, 99);
+  const equityRiverClean = Math.min(cleanOuts * 4, 99);
 
   return {
     flushDraw, oesd, gutshot, backdoorFlush,
     overCards,
     comboDraws: flushDraw && (oesd || gutshot),
     totalOuts: outs,
+    discountedOuts: Math.round(cleanOuts * 10) / 10,
     equityTurn,
     equityRiver: cardsToGo === 2 ? equityRiver : equityTurn,
+    equityTurnClean,
+    equityRiverClean: cardsToGo === 2 ? equityRiverClean : equityTurnClean,
+    antiOutsNote: antiOutsReasons.length ? antiOutsReasons.join('; ') : null,
     description: descriptions.join(' + ') || 'No draw',
   };
 }
@@ -382,7 +462,7 @@ export function getFullAdvice(
     details.push(`${handName} — максимизируй пот`);
     details.push(`Вероятность победы: ${(w * 100).toFixed(0)}%`);
     if (mdf) details.push(`Вилланту нужно защищать ${(mdf * 100).toFixed(0)}% рук`);
-    return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory, handName, draws, sizing, ev: evResult, bluffRead };
+    return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory, handName, draws, sizing, ev: evResult, bluffRead, usedRangeVsRange: simResult.usedRangeVsRange, villainRangePct: simResult.villainRangePct };
   }
 
   // ── PREFLOP ─────────────────────────────────────────────────────────────────
@@ -407,12 +487,12 @@ export function getFullAdvice(
       details.push(preflopAdvice.reason);
     }
     details.push(`Equity: ${getPreflopEquity(holeCards).toFixed(0)}% vs случайной`);
-    return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory: preflopAdvice.strength, handName: null, draws: null, sizing, ev: evResult, bluffRead: null };
+    return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory: preflopAdvice.strength, handName: null, draws: null, sizing, ev: evResult, bluffRead: null, usedRangeVsRange: false, villainRangePct: null };
   }
 
   // ── POST-FLOP ───────────────────────────────────────────────────────────────
   const hasNoBet = !betToCall || betToCall === 0;
-  const drawEquity = draws ? draws.equityRiver / 100 : 0;
+  const drawEquity = draws ? draws.equityRiverClean / 100 : 0; // use "clean" (anti-outs discounted) equity for decisions
   const effectiveEquity = Math.max(w, drawEquity);
   const isStrong  = handRank !== null && handRank >= HandRank.FLUSH;
   const isMedium  = handRank !== null && handRank >= HandRank.TWO_PAIR;
@@ -434,11 +514,12 @@ export function getFullAdvice(
       action = 'RAISE'; displayText = 'BET (полублеф)'; color = 'bg-teal-600';
       sizing = '50% pot';
       details.push(draws!.description);
-      details.push(`~${draws!.equityRiver}% equity на дроу — полублеф`);
+      details.push(`~${draws!.equityRiverClean}% "чистого" equity на дроу (грязных ${draws!.equityRiver}%) — полублеф`);
+      if (draws!.antiOutsNote) details.push(draws!.antiOutsNote);
     } else if (w > 0.50) {
       action = 'CHECK'; displayText = 'CHECK'; color = 'bg-zinc-600';
       details.push(`Win ${(w * 100).toFixed(0)}% — контролируй пот`);
-      if (draws) details.push(`${draws.totalOuts} outs, смотри бесплатно`);
+      if (draws) details.push(`${draws.discountedOuts} чистых outs (из ${draws.totalOuts}), смотри бесплатно`);
     } else {
       action = 'CHECK'; displayText = 'CHECK'; color = 'bg-zinc-700';
       details.push(`Win ${(w * 100).toFixed(0)}% — пасс`);
@@ -466,7 +547,8 @@ export function getFullAdvice(
       action = 'CALL'; displayText = 'CALL'; color = 'bg-blue-600';
       details.push(`Win ${(w * 100).toFixed(0)}% > pot odds ${(potOdds! * 100).toFixed(0)}%`);
       if (hasGoodDraw && draws) {
-        details.push(`Дроу: ${draws.description} = ${draws.equityRiver}% equity`);
+        details.push(`Дроу: ${draws.description} = ${draws.equityRiverClean}% "чистого" equity (грязных ${draws.equityRiver}%)`);
+        if (draws.antiOutsNote) details.push(draws.antiOutsNote);
       }
       if (callEV !== null) {
         details.push(`EV колла: ${callEV > 0 ? '+' : ''}${callEV.toFixed(1)} BB`);
@@ -476,11 +558,11 @@ export function getFullAdvice(
     } else {
       action = 'FOLD'; displayText = 'FOLD'; color = 'bg-red-700';
       details.push(`Win ${(w * 100).toFixed(0)}% < pot odds ${potOdds !== null ? (potOdds * 100).toFixed(0) + '%' : '?'}`);
-      if (draws) details.push(`Дроу: ${draws.totalOuts} outs (${draws.equityRiver}%) — недостаточно`);
+      if (draws) details.push(`Дроу: ${draws.discountedOuts} чистых outs из ${draws.totalOuts} (${draws.equityRiverClean}%) — недостаточно`);
       if (callEV !== null) details.push(`EV: ${callEV.toFixed(1)} BB (отрицательный)`);
       if (bluffRead && bluffRead.label === 'Вероятно блеф') details.push(`Read: ${bluffRead.label.toLowerCase()} — но математика важнее ощущений`);
     }
   }
 
-  return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory, handName, draws, sizing, ev: evResult, bluffRead };
+  return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory, handName, draws, sizing, ev: evResult, bluffRead, usedRangeVsRange: simResult.usedRangeVsRange, villainRangePct: simResult.villainRangePct };
 }

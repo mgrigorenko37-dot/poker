@@ -7,7 +7,10 @@ interface DrawInfo {
   oesd: boolean;
   gutshot: boolean;
   totalOuts: number;
+  discountedOuts: number;
   equityRiver: number;
+  equityRiverClean: number;
+  antiOutsNote: string | null;
   description: string;
 }
 
@@ -258,8 +261,11 @@ export function LiveView() {
                 <p className="text-teal-400 text-xs font-bold uppercase tracking-wider mb-1">Дроу</p>
                 <p className="text-teal-300 text-sm">{analysis.draws.description}</p>
                 <p className="text-teal-500 text-xs mt-1">
-                  {analysis.draws.totalOuts} outs → ~{analysis.draws.equityRiver}% equity
+                  {analysis.draws.discountedOuts} чистых outs (из {analysis.draws.totalOuts}) → ~{analysis.draws.equityRiverClean}% equity
                 </p>
+                {analysis.draws.antiOutsNote && (
+                  <p className="text-teal-700 text-xs mt-1 italic">{analysis.draws.antiOutsNote}</p>
+                )}
               </div>
             )}
 

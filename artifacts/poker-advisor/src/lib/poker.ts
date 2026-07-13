@@ -238,6 +238,84 @@ export function getPreflopEquity(holeCards: Card[]): number {
   return PREFLOP_EQUITY[key] || 50;
 }
 
+// ─── Ranges: turning a set of 169 hand keys into real card combos ─────────────
+// Used so Monte Carlo can deal an opponent cards "from a range" instead of
+// two fully random cards ("Any Two") — Any Two makes equity look artificially
+// high against anyone who has actually bet, called, or raised.
+
+function rankFromChar(ch: string): Rank {
+  for (const [r, c] of Object.entries(RANK_CHARS)) {
+    if (c === ch) return parseInt(r) as Rank;
+  }
+  return 2;
+}
+
+// Hand keys (from PREFLOP_EQUITY, e.g. "AA", "AKs", "AKo") whose raw equity
+// vs. a random hand is >= minEquity. Pairs are always included regardless of
+// threshold — real players continue with small/medium pairs for set-mining
+// value well beyond what raw preflop equity suggests.
+export function getRangeHandKeys(minEquity: number): string[] {
+  return Object.entries(PREFLOP_EQUITY)
+    .filter(([key, equity]) => key.length === 2 /* pair, e.g. "AA" */ || equity >= minEquity)
+    .map(([key]) => key);
+}
+
+// A reasonably wide "typical continuing opponent" range (~40% of hands) used
+// as the default villain range for postflop Monte Carlo when no explicit
+// range is supplied. Approximates "someone who bet/called/raised to get here"
+// far better than dealing them literally any two cards.
+export const DEFAULT_VILLAIN_RANGE: string[] = getRangeHandKeys(50);
+
+// Expands a list of hand keys into concrete (unblocked) card-pair combos.
+export function expandRangeToCombos(handKeys: string[], excluded: Card[] = []): [Card, Card][] {
+  const excludedSet = new Set(excluded.map(c => `${c.rank}${c.suit}`));
+  const suits: Suit[] = ['c', 'd', 'h', 's'];
+  const combos: [Card, Card][] = [];
+
+  const isBlocked = (c: Card) => excludedSet.has(`${c.rank}${c.suit}`);
+
+  for (const key of handKeys) {
+    const isPair = key.length === 2;
+    if (isPair) {
+      const r = rankFromChar(key[0]);
+      for (let i = 0; i < suits.length; i++) {
+        for (let j = i + 1; j < suits.length; j++) {
+          const c1: Card = { rank: r, suit: suits[i] };
+          const c2: Card = { rank: r, suit: suits[j] };
+          if (isBlocked(c1) || isBlocked(c2)) continue;
+          combos.push([c1, c2]);
+        }
+      }
+      continue;
+    }
+
+    const suited = key.endsWith('s');
+    const r1 = rankFromChar(key[0]);
+    const r2 = rankFromChar(key[1]);
+
+    if (suited) {
+      for (const s of suits) {
+        const c1: Card = { rank: r1, suit: s };
+        const c2: Card = { rank: r2, suit: s };
+        if (isBlocked(c1) || isBlocked(c2)) continue;
+        combos.push([c1, c2]);
+      }
+    } else {
+      for (const s1 of suits) {
+        for (const s2 of suits) {
+          if (s1 === s2) continue;
+          const c1: Card = { rank: r1, suit: s1 };
+          const c2: Card = { rank: r2, suit: s2 };
+          if (isBlocked(c1) || isBlocked(c2)) continue;
+          combos.push([c1, c2]);
+        }
+      }
+    }
+  }
+
+  return combos;
+}
+
 // Determine recommended action Preflop based on position and equity
 export function getPreflopAction(equity: number, position: string): string {
   if (equity >= 65) return "RAISE";
@@ -258,22 +336,32 @@ export interface SimulationResult {
   total: number;
   winProb: number;
   tieProb: number;
+  usedRangeVsRange: boolean; // false = opponents dealt fully random cards ("Any Two")
+  villainRangePct: number | null; // approx % of hands the range covers, for display
 }
 
 export function runMonteCarloSim(
-  holeCards: Card[], 
-  boardCards: Card[], 
+  holeCards: Card[],
+  boardCards: Card[],
   numPlayers: number = 2,
-  iterations: number = 1000
+  iterations: number = 1000,
+  opponentRangeKeys?: string[],
 ): SimulationResult {
-  if (holeCards.length !== 2) return { wins: 0, losses: 0, ties: 0, total: 0, winProb: 0, tieProb: 0 };
-  
-  // If preflop, use lookups for speed if we only need approx vs 1 random hand
-  // But since we want to handle numPlayers, we'll run the sim.
-  
+  const empty: SimulationResult = { wins: 0, losses: 0, ties: 0, total: 0, winProb: 0, tieProb: 0, usedRangeVsRange: false, villainRangePct: null };
+  if (holeCards.length !== 2) return empty;
+
   const knownCards = new Set([...holeCards, ...boardCards].map(c => `${c.rank}${c.suit}`));
   const deck = createDeck().filter(c => !knownCards.has(`${c.rank}${c.suit}`));
-  
+
+  // ── Range vs Range ──────────────────────────────────────────────────────────
+  // Postflop, default opponents to a realistic "continuing villain" range
+  // instead of dealing them literally any two cards — Any Two makes our
+  // equity look artificially inflated against anyone who actually bet/
+  // called/raised to get to this point.
+  const rangeKeys = opponentRangeKeys ?? (boardCards.length > 0 ? DEFAULT_VILLAIN_RANGE : undefined);
+  const rangeCombos = rangeKeys ? expandRangeToCombos(rangeKeys, [...holeCards, ...boardCards]) : null;
+  const villainRangePct = rangeKeys ? Math.round((rangeKeys.length / 169) * 100) : null;
+
   let wins = 0;
   let losses = 0;
   let ties = 0;
@@ -285,32 +373,75 @@ export function runMonteCarloSim(
       const k = Math.floor(Math.random() * (j + 1));
       [simDeck[j], simDeck[k]] = [simDeck[k], simDeck[j]];
     }
-    
+
+    const usedThisIteration = new Set(knownCards);
     let deckIdx = 0;
-    
+
     // deal remaining board cards
     const simBoard = [...boardCards];
     while (simBoard.length < 5) {
-      simBoard.push(simDeck[deckIdx++]);
+      const card = simDeck[deckIdx++];
+      simBoard.push(card);
+      usedThisIteration.add(`${card.rank}${card.suit}`);
     }
-    
+
     const myEval = evaluateHand(holeCards, simBoard);
     const myScore = myEval ? myEval.score : 0;
-    
+
     let highestOpponentScore = -1;
-    let tieCount = 0;
-    
+
+    // shuffle a fresh copy of the range combo pool for this iteration
+    let comboPool: [Card, Card][] | null = null;
+    let comboPoolIdx = 0;
+    if (rangeCombos && rangeCombos.length > 0) {
+      comboPool = [...rangeCombos];
+      for (let j = comboPool.length - 1; j > 0; j--) {
+        const k = Math.floor(Math.random() * (j + 1));
+        [comboPool[j], comboPool[k]] = [comboPool[k], comboPool[j]];
+      }
+    }
+
+    const nextDeckCard = (): Card => {
+      while (deckIdx < simDeck.length && usedThisIteration.has(`${simDeck[deckIdx].rank}${simDeck[deckIdx].suit}`)) {
+        deckIdx++;
+      }
+      const card = simDeck[deckIdx++];
+      usedThisIteration.add(`${card.rank}${card.suit}`);
+      return card;
+    };
+
     // deal for opponents
     for (let p = 1; p < numPlayers; p++) {
-      const oppHole = [simDeck[deckIdx++], simDeck[deckIdx++]];
+      let oppHole: [Card, Card] | null = null;
+
+      if (comboPool) {
+        while (comboPoolIdx < comboPool.length) {
+          const [c1, c2] = comboPool[comboPoolIdx++];
+          const k1 = `${c1.rank}${c1.suit}`;
+          const k2 = `${c2.rank}${c2.suit}`;
+          if (!usedThisIteration.has(k1) && !usedThisIteration.has(k2)) {
+            oppHole = [c1, c2];
+            usedThisIteration.add(k1);
+            usedThisIteration.add(k2);
+            break;
+          }
+        }
+      }
+
+      // Fallback: range pool exhausted (rare with tight ranges + many players)
+      // or no range in play — deal from the remaining deck at random.
+      if (!oppHole) {
+        oppHole = [nextDeckCard(), nextDeckCard()];
+      }
+
       const oppEval = evaluateHand(oppHole, simBoard);
       const oppScore = oppEval ? oppEval.score : 0;
-      
+
       if (oppScore > highestOpponentScore) {
         highestOpponentScore = oppScore;
       }
     }
-    
+
     if (myScore > highestOpponentScore) {
       wins++;
     } else if (myScore < highestOpponentScore) {
@@ -319,14 +450,16 @@ export function runMonteCarloSim(
       ties++;
     }
   }
-  
+
   return {
     wins,
     losses,
     ties,
     total: iterations,
     winProb: wins / iterations,
-    tieProb: ties / iterations
+    tieProb: ties / iterations,
+    usedRangeVsRange: !!rangeCombos,
+    villainRangePct,
   };
 }
 
