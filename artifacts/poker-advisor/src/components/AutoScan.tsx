@@ -23,7 +23,7 @@ export function AutoScan() {
   const [error, setError] = useState<string | null>(null);
   const [scanCount, setScanCount] = useState(0);
   const [lastScanTime, setLastScanTime] = useState<string | null>(null);
-  const [intervalSecs, setIntervalSecs] = useState(3);
+  const [intervalSecs, setIntervalSecs] = useState(10);
 
   const streamRef = useRef<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -38,14 +38,18 @@ export function AutoScan() {
     const canvas = canvasRef.current;
     if (!video || !canvas || video.readyState < 2) return null;
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    // Resize to max 800px wide to reduce token usage (full screen = too many tokens)
+    const MAX_WIDTH = 800;
+    const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
+
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
-    ctx.drawImage(video, 0, 0);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Get base64 without the data:image/jpeg;base64, prefix
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    // Low quality JPEG to further reduce size
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
     return dataUrl.split(',')[1];
   }, []);
 
@@ -221,7 +225,7 @@ export function AutoScan() {
       {status !== 'scanning' && (
         <div className="flex items-center gap-4">
           <span className="text-zinc-500 text-sm">Scan every:</span>
-          {[2, 3, 5].map(s => (
+          {[5, 10, 15].map(s => (
             <button
               key={s}
               onClick={() => setIntervalSecs(s)}

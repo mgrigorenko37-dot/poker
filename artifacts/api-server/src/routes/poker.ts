@@ -88,9 +88,13 @@ router.post("/scan-cards", async (req, res): Promise<void> => {
       confidence: typeof data.confidence === "number" ? data.confidence : 0,
       rawDescription: data.rawDescription ?? null,
     });
-  } catch (err) {
+  } catch (err: any) {
     req.log.error({ err }, "Gemini Vision error");
-    res.status(500).json({ error: "AI analysis failed" });
+    if (err?.status === 429) {
+      res.status(429).json({ error: "Gemini quota exceeded — wait a minute and try again, or increase scan interval" });
+    } else {
+      res.status(500).json({ error: "AI analysis failed" });
+    }
   }
 });
 
