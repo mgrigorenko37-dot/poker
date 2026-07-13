@@ -1,7 +1,9 @@
 /**
- * ScreenScan — полностью автоматический анализ экрана
- * Fixes: video always in DOM (no srcObject-on-null), diffCanvas in useEffect,
- *        ReturnType<typeof setInterval> instead of NodeJS.Timeout
+ * ScreenScan — real-time poker screen analysis
+ * - Two parallel Tesseract workers (hole vs board)
+ * - Per-region pixel fingerprint to skip unchanged cards
+ * - Otsu dynamic threshold + 5× upscale for better OCR
+ * - Adjustable card-height slider (tune for your TON Poker window size)
  */
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { createWorker, type Worker } from 'tesseract.js';
@@ -11,41 +13,60 @@ import { getFullAdvice, type FullAdvice, type Position } from '@/lib/poker-gto';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Phase = 'idle' | 'requesting' | 'calibrating' | 'loading-ocr' | 'scanning';
-
 interface CardRegion { label: string; cx: number; cy: number }
-interface SavedCalibration { regions: CardRegion[]; version: number }
+interface SavedCalibration { regions: CardRegion[]; cardSizePct: number; version: number }
 
-// ─── Constants ────────────────────────────────────────────────────────────────
 const CALIBRATION_STEPS = [
-  { label: 'Hole 1',  hint: 'Кликни на центр ПЕРВОЙ своей карты' },
-  { label: 'Hole 2',  hint: 'Кликни на центр ВТОРОЙ своей карты' },
-  { label: 'Board 1', hint: 'Флоп — 1-я карта (или пропусти)' },
-  { label: 'Board 2', hint: 'Флоп — 2-я карта (или пропусти)' },
-  { label: 'Board 3', hint: 'Флоп — 3-я карта (или пропусти)' },
-  { label: 'Board 4', hint: 'Тёрн (или пропусти)' },
-  { label: 'Board 5', hint: 'Ривер (или пропусти)' },
+  { label: 'Hole 1',  hint: 'Кликни на ЦЕНТР первой своей карты' },
+  { label: 'Hole 2',  hint: 'Кликни на ЦЕНТР второй своей карты' },
+  { label: 'Board 1', hint: 'Флоп — 1-я карта (или «Пропустить»)' },
+  { label: 'Board 2', hint: 'Флоп — 2-я карта (или «Пропустить»)' },
+  { label: 'Board 3', hint: 'Флоп — 3-я карта (или «Пропустить»)' },
+  { label: 'Board 4', hint: 'Тёрн (или «Пропустить»)' },
+  { label: 'Board 5', hint: 'Ривер (или «Пропустить»)' },
 ];
-
-const STORAGE_KEY = 'poker_screen_calibration_v2';
+const STORAGE_KEY = 'poker_screen_calibration_v3';
 const RANK_MAP: Record<string, string> = {
   a:'A',A:'A',k:'K',K:'K',q:'Q',Q:'Q',j:'J',J:'J',t:'T',T:'T',
   '1':'T','10':'T','0':'T','2':'2','3':'3','4':'4','5':'5','6':'6','7':'7','8':'8','9':'9',
 };
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
-function saveCalibration(r: CardRegion[]) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ regions: r, version: 2 })); } catch {}
+function saveCalibration(r: CardRegion[], cardSizePct: number) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ regions: r, cardSizePct, version: 3 })); } catch {}
 }
-function loadCalibration(): CardRegion[] | null {
+function loadCalibration(): SavedCalibration | null {
   try {
     const d: SavedCalibration = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
-    return d?.version === 2 && Array.isArray(d.regions) && d.regions.length >= 2 ? d.regions : null;
+    return d?.version === 3 && d.regions?.length >= 2 ? d : null;
   } catch { return null; }
 }
 
+// ─── Otsu threshold ───────────────────────────────────────────────────────────
+function otsuThreshold(data: Uint8ClampedArray): number {
+  const hist = new Array(256).fill(0);
+  const n = data.length / 4;
+  for (let i = 0; i < data.length; i += 4)
+    hist[Math.round((data[i] + data[i+1] + data[i+2]) / 3)]++;
+  let sum = 0;
+  for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let sumB = 0, wB = 0, best = 0, T = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (!wB) continue;
+    const wF = n - wB;
+    if (!wF) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB, mF = (sum - sumB) / wF;
+    const v = wB * wF * (mB - mF) ** 2;
+    if (v > best) { best = v; T = t; }
+  }
+  return T;
+}
+
 // ─── Image helpers ────────────────────────────────────────────────────────────
-function extractCardRegion(src: HTMLCanvasElement, cx: number, cy: number, cw: number, ch: number) {
-  const x = Math.round(cx * src.width - cw / 2);
+function extractCardRegion(src: HTMLCanvasElement, cx: number, cy: number, cw: number, ch: number): HTMLCanvasElement {
+  const x = Math.round(cx * src.width  - cw / 2);
   const y = Math.round(cy * src.height - ch / 2);
   const out = document.createElement('canvas');
   out.width = cw; out.height = ch;
@@ -53,19 +74,25 @@ function extractCardRegion(src: HTMLCanvasElement, cx: number, cy: number, cw: n
   return out;
 }
 
-function extractRankArea(card: HTMLCanvasElement) {
-  const W = Math.round(card.width * 0.38);
-  const H = Math.round(card.height * 0.42);
+// Extract rank top-left corner, scale 5×, binarize with Otsu
+function extractRankArea(card: HTMLCanvasElement): HTMLCanvasElement {
+  const W = Math.round(card.width  * 0.40);
+  const H = Math.round(card.height * 0.44);
+  const SCALE = 5;
   const out = document.createElement('canvas');
-  out.width = W * 3; out.height = H * 3;
+  out.width = W * SCALE; out.height = H * SCALE;
   const ctx = out.getContext('2d')!;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(card, 0, 0, W, H, 0, 0, W * 3, H * 3);
+  // white background first (in case card edges bleed transparent)
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(card, 0, 0, W, H, 0, 0, W * SCALE, H * SCALE);
   const id = ctx.getImageData(0, 0, out.width, out.height);
+  const T = otsuThreshold(id.data);
   for (let i = 0; i < id.data.length; i += 4) {
-    const avg = (id.data[i] + id.data[i+1] + id.data[i+2]) / 3;
-    id.data[i] = id.data[i+1] = id.data[i+2] = avg > 140 ? 255 : 0;
+    const v = Math.round((id.data[i] + id.data[i+1] + id.data[i+2]) / 3) < T ? 0 : 255;
+    id.data[i] = id.data[i+1] = id.data[i+2] = v;
   }
   ctx.putImageData(id, 0, 0);
   return out;
@@ -73,26 +100,50 @@ function extractRankArea(card: HTMLCanvasElement) {
 
 function detectSuit(card: HTMLCanvasElement): 'h'|'d'|'c'|'s' {
   const ctx = card.getContext('2d')!;
-  const sx = Math.round(card.width * 0.10), sy = Math.round(card.height * 0.22);
-  const sw = Math.round(card.width * 0.25), sh = Math.round(card.height * 0.18);
+  // Sample the lower-left quadrant where suit symbol usually lives
+  const sx = Math.round(card.width  * 0.05);
+  const sy = Math.round(card.height * 0.44);
+  const sw = Math.round(card.width  * 0.45);
+  const sh = Math.round(card.height * 0.44);
   const d = ctx.getImageData(sx, sy, sw, sh).data;
   let r = 0, g = 0, b = 0, n = 0;
   for (let i = 0; i < d.length; i += 4) {
+    // skip near-white background pixels
     if (d[i] > 200 && d[i+1] > 200 && d[i+2] > 200) continue;
     r += d[i]; g += d[i+1]; b += d[i+2]; n++;
   }
   if (!n) return 'h';
   r /= n; g /= n; b /= n;
-  if (r > 140 && g < 100) return 'h';
-  if (r < 120 && g < 120) return 's';
-  return 'd';
+  if (r > 140 && g < 100 && b < 120) return 'h';   // red → hearts
+  if (r > 140 && g < 120 && b > 120) return 'd';   // magenta-ish → diamonds
+  if (r < 120 && g > 100 && b < 120) return 'c';   // green → clubs
+  return 's';                                        // dark/blue → spades
 }
 
 function parseRank(raw: string): string | null {
   const c = raw.replace(/[^AaKkQqJjTt0-9]/g, '').trim();
   if (!c) return null;
-  if (c === '10' || c === '1O' || c === 'IO') return 'T';
+  if (c === '10' || c === '1O' || c === 'IO' || c === '1o') return 'T';
   return RANK_MAP[c[0]] ?? null;
+}
+
+// Pixel fingerprint for a card region — used to skip OCR if card hasn't changed
+function regionFingerprint(src: HTMLCanvasElement, cx: number, cy: number, cw: number, ch: number): string {
+  const ctx = src.getContext('2d')!;
+  const x = Math.round(cx * src.width  - cw / 2);
+  const y = Math.round(cy * src.height - ch / 2);
+  // 4×4 sample grid
+  const bits: number[] = [];
+  for (let r = 0; r < 4; r++)
+    for (let c2 = 0; c2 < 4; c2++) {
+      const px = ctx.getImageData(
+        x + Math.round(cw * (c2 + 0.5) / 4),
+        y + Math.round(ch * (r  + 0.5) / 4),
+        1, 1,
+      ).data;
+      bits.push(Math.round((px[0] + px[1] + px[2]) / 3 / 16)); // 16 levels
+    }
+  return bits.join(',');
 }
 
 function frameDiff(prev: Uint8ClampedArray, curr: Uint8ClampedArray, thresh = 40): number {
@@ -111,10 +162,38 @@ async function pushAnalysis(payload: object) {
   } catch {}
 }
 
-// ─── Card display helpers ─────────────────────────────────────────────────────
+// ─── Display helpers ──────────────────────────────────────────────────────────
 const suitSym  = (s: string) => ({ h:'♥',d:'♦',c:'♣',s:'♠' }[s] ?? s);
 const suitCls  = (s: string) => s === 'h' || s === 'd' ? 'text-red-400' : 'text-zinc-200';
 const rankLabel = (r: number) => ({ 14:'A',13:'K',12:'Q',11:'J',10:'T' }[r] ?? String(r));
+
+// Process a list of regions with one worker (sequential within worker, safe)
+async function processRegions(
+  worker: Worker,
+  src: HTMLCanvasElement,
+  regs: CardRegion[],
+  cardW: number, cardH: number,
+  fps: Map<string, { fp: string; card: Card | null }>,
+): Promise<(Card | null)[]> {
+  const results: (Card | null)[] = [];
+  for (const region of regs) {
+    const key = region.label;
+    const fp  = regionFingerprint(src, region.cx, region.cy, cardW, cardH);
+    const cached = fps.get(key);
+    if (cached?.fp === fp) { results.push(cached.card); continue; } // no change
+
+    const cardC = extractCardRegion(src, region.cx, region.cy, cardW, cardH);
+    const rankC = extractRankArea(cardC);
+    const { data } = await worker.recognize(rankC);
+    const rank = parseRank(data.text.trim());
+    const suit = detectSuit(cardC);
+    let card: Card | null = null;
+    if (rank) { try { card = parseCard(`${rank}${suit}`); } catch {} }
+    fps.set(key, { fp, card });
+    results.push(card);
+  }
+  return results;
+}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export function ScreenScan() {
@@ -134,37 +213,41 @@ export function ScreenScan() {
   const [potSize, setPotSize]       = useState<number | null>(null);
   const [betToCall, setBetToCall]   = useState<number | null>(null);
   const [position, setPosition]     = useState<Position>('BTN');
+  // Card height as % of captured frame height — tune to match your TON Poker window
+  const [cardSizePct, setCardSizePct] = useState(9);
 
-  // Refs — video always in DOM; diffCanvas created in useEffect to avoid render side-effects
   const videoRef     = useRef<HTMLVideoElement>(null);
   const canvasRef    = useRef<HTMLCanvasElement>(null);
   const diffCanvas   = useRef<HTMLCanvasElement | null>(null);
-  const workerRef    = useRef<Worker | null>(null);
+  // Two workers: [0] for hole cards, [1] for board cards
+  const workersRef   = useRef<Worker[]>([]);
   const streamRef    = useRef<MediaStream | null>(null);
   const scanLoopRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevPixels   = useRef<Uint8ClampedArray | null>(null);
   const analyzingRef = useRef(false);
+  // Per-region fingerprint cache
+  const fingerprintCache = useRef<Map<string, { fp: string; card: Card | null }>>(new Map());
 
   useEffect(() => {
-    // Must not run during render phase
     diffCanvas.current = document.createElement('canvas');
-    setHasSaved(loadCalibration() !== null);
+    const saved = loadCalibration();
+    setHasSaved(saved !== null);
+    if (saved?.cardSizePct) setCardSizePct(saved.cardSizePct);
   }, []);
 
-  // ── Stop everything ───────────────────────────────────────────────────────
+  // ── Stop ─────────────────────────────────────────────────────────────────
   const stopAll = useCallback(() => {
     if (scanLoopRef.current) { clearInterval(scanLoopRef.current); scanLoopRef.current = null; }
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
     prevPixels.current = null;
+    fingerprintCache.current.clear();
     setPhase('idle');
     setRegions([]);
     setCalStep(0);
   }, []);
 
-  // ── Start screen capture ──────────────────────────────────────────────────
-  // Video element is ALWAYS in the DOM (hidden via CSS when idle/requesting),
-  // so videoRef.current is never null here.
+  // ── Start capture ─────────────────────────────────────────────────────────
   const startCapture = useCallback(async (skipCalibration = false) => {
     setError(null);
     setPhase('requesting');
@@ -174,21 +257,19 @@ export function ScreenScan() {
         audio: false,
       });
       streamRef.current = stream;
-
-      // video is always mounted — just hidden — so this is safe
       const video = videoRef.current!;
       video.srcObject = stream;
       video.muted = true;
       video.playsInline = true;
       stream.getVideoTracks()[0].addEventListener('ended', stopAll);
-      // play() is called after phase change renders the visible video
       video.play().catch(() => {});
 
       if (skipCalibration) {
         const saved = loadCalibration();
-        if (saved?.length && saved.length >= 2) {
-          setRegions(saved);
-          await loadOcr(saved, true);
+        if (saved) {
+          setRegions(saved.regions);
+          if (saved.cardSizePct) setCardSizePct(saved.cardSizePct);
+          await loadOcr(saved.regions, true);
           return;
         }
       }
@@ -205,7 +286,7 @@ export function ScreenScan() {
     }
   }, [stopAll]);
 
-  // ── Calibration click ─────────────────────────────────────────────────────
+  // ── Calibration ───────────────────────────────────────────────────────────
   const handleVideoTap = useCallback(async (e: React.MouseEvent<HTMLVideoElement>) => {
     if (phase !== 'calibrating') return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -215,37 +296,41 @@ export function ScreenScan() {
     setRegions(newRegions);
     const next = calStep + 1;
     if (next >= CALIBRATION_STEPS.length) {
-      saveCalibration(newRegions);
+      saveCalibration(newRegions, cardSizePct);
       setHasSaved(true);
       await loadOcr(newRegions, true);
     } else {
       setCalStep(next);
     }
-  }, [phase, calStep, regions]);
+  }, [phase, calStep, regions, cardSizePct]);
 
   const skipCard = useCallback(async () => {
     if (calStep < 2) return;
     const next = calStep + 1;
     if (next >= CALIBRATION_STEPS.length) {
-      saveCalibration(regions);
+      saveCalibration(regions, cardSizePct);
       setHasSaved(true);
       await loadOcr(regions, true);
     } else {
       setCalStep(next);
     }
-  }, [calStep, regions]);
+  }, [calStep, regions, cardSizePct]);
 
-  // ── Load Tesseract ────────────────────────────────────────────────────────
+  // ── Load OCR workers ──────────────────────────────────────────────────────
   const loadOcr = useCallback(async (finalRegions: CardRegion[], autoStart: boolean) => {
     setPhase('loading-ocr');
     try {
-      if (!workerRef.current) {
-        const w = await createWorker('eng', 1, { logger: () => {} });
-        await w.setParameters({
+      if (workersRef.current.length === 0) {
+        const params = {
           tessedit_char_whitelist: 'AaKkQqJjTt23456789',
-          tessedit_pageseg_mode: '10' as any,
-        });
-        workerRef.current = w;
+          tessedit_pageseg_mode: '10' as any, // PSM_SINGLE_CHAR
+        };
+        const [w1, w2] = await Promise.all([
+          createWorker('eng', 1, { logger: () => {} }),
+          createWorker('eng', 1, { logger: () => {} }),
+        ]);
+        await Promise.all([w1.setParameters(params), w2.setParameters(params)]);
+        workersRef.current = [w1, w2];
       }
       setRegions(finalRegions);
       if (autoStart) startScanLoop(finalRegions);
@@ -256,7 +341,7 @@ export function ScreenScan() {
     }
   }, []);
 
-  // ── Frame capture ─────────────────────────────────────────────────────────
+  // ── Capture frame ─────────────────────────────────────────────────────────
   const captureToCanvas = useCallback((): HTMLCanvasElement | null => {
     const video = videoRef.current, canvas = canvasRef.current;
     if (!video || !canvas || video.readyState < 2) return null;
@@ -266,28 +351,27 @@ export function ScreenScan() {
     return canvas;
   }, []);
 
-  // ── OCR one frame ─────────────────────────────────────────────────────────
-  const runOCR = useCallback(async (canvas: HTMLCanvasElement, regs: CardRegion[]) => {
-    const worker = workerRef.current;
-    if (!worker || regs.length < 2 || analyzingRef.current) return;
+  // ── OCR one frame (parallel workers) ─────────────────────────────────────
+  const runOCR = useCallback(async (canvas: HTMLCanvasElement, regs: CardRegion[], sizePct: number) => {
+    const [w1, w2] = workersRef.current;
+    if (!w1 || !w2 || regs.length < 2 || analyzingRef.current) return;
     analyzingRef.current = true;
     setAnalyzing(true);
     try {
-      const cardH = Math.round(canvas.height * 0.10);
-      const cardW = Math.round(cardH * 0.69);
-      const detected: { card: Card | null }[] = [];
-      for (const region of regs) {
-        const cardC = extractCardRegion(canvas, region.cx, region.cy, cardW, cardH);
-        const rankC = extractRankArea(cardC);
-        const { data } = await worker.recognize(rankC);
-        const rank = parseRank(data.text.trim());
-        const suit = detectSuit(cardC);
-        let card: Card | null = null;
-        if (rank) { try { card = parseCard(`${rank}${suit}`); } catch {} }
-        detected.push({ card });
-      }
-      const hole  = detected.slice(0, 2).filter(d => d.card).map(d => d.card!);
-      const board = detected.slice(2).filter(d => d.card).map(d => d.card!);
+      const cardH = Math.round(canvas.height * sizePct / 100);
+      const cardW = Math.round(cardH * 0.72);
+
+      const holeRegs  = regs.slice(0, 2);
+      const boardRegs = regs.slice(2);
+
+      // Run both workers in parallel
+      const [holeResults, boardResults] = await Promise.all([
+        processRegions(w1, canvas, holeRegs,  cardW, cardH, fingerprintCache.current),
+        processRegions(w2, canvas, boardRegs, cardW, cardH, fingerprintCache.current),
+      ]);
+
+      const hole  = holeResults.filter((c): c is Card => c !== null);
+      const board = boardResults.filter((c): c is Card => c !== null);
       setHoleCards(hole);
       setBoardCards(board);
 
@@ -310,10 +394,12 @@ export function ScreenScan() {
     finally { analyzingRef.current = false; setAnalyzing(false); }
   }, [players, potSize, betToCall, position]);
 
-  // ── Scan loop — frame-diff gated ─────────────────────────────────────────
+  // ── Scan loop ─────────────────────────────────────────────────────────────
   const startScanLoop = useCallback((regs: CardRegion[]) => {
     setPhase('scanning');
     let ticks = 0;
+    // Use a ref so the loop always sees the latest cardSizePct
+    const getSizePct = () => cardSizePctRef.current;
     const loop = setInterval(async () => {
       const canvas = captureToCanvas();
       if (!canvas || !diffCanvas.current) return;
@@ -328,24 +414,27 @@ export function ScreenScan() {
       if (prevPixels.current) {
         const d = frameDiff(prevPixels.current, curr);
         setDiffPct(Math.round(d * 100));
-        changed = d > 0.025;
+        changed = d > 0.02;
       }
       prevPixels.current = new Uint8ClampedArray(curr);
 
-      if ((changed || ticks >= 6) && !analyzingRef.current) {
+      if ((changed || ticks >= 5) && !analyzingRef.current) {
         ticks = 0;
-        await runOCR(canvas, regs);
+        await runOCR(canvas, regs, getSizePct());
       }
-    }, 800);
+    }, 700);
     scanLoopRef.current = loop;
   }, [captureToCanvas, runOCR]);
 
+  // Ref for cardSizePct so scan loop closure always reads latest value
+  const cardSizePctRef = useRef(cardSizePct);
+  useEffect(() => { cardSizePctRef.current = cardSizePct; }, [cardSizePct]);
+
   useEffect(() => () => {
     stopAll();
-    workerRef.current?.terminate();
+    workersRef.current.forEach(w => w.terminate());
   }, []);
 
-  // ─── UI ───────────────────────────────────────────────────────────────────
   const captureActive = phase !== 'idle' && phase !== 'requesting';
 
   return (
@@ -358,13 +447,18 @@ export function ScreenScan() {
           <div>
             <h2 className="text-2xl font-bold mb-2">Авто-скан экрана</h2>
             <p className="text-zinc-500 text-sm leading-relaxed">
-              Захватывает экран → OCR карт → GTO анализ (MDF, EV, дроу) → отправляет на телефон в реальном времени.
+              Захватывает экран → OCR карт → GTO анализ → отправляет на телефон в реальном времени.
             </p>
           </div>
           <div className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-left space-y-1.5">
-            {['Открой TON Poker в Telegram Desktop', 'Нажми «Начать» — выбери окно Telegram', 'Один раз кликни на каждую карту (калибровка сохраняется)', 'Советы идут автоматически + на телефон через вкладку 📱 Эфир'].map((s, i) => (
+            {[
+              'Открой TON Poker в Telegram Desktop',
+              'Нажми «Запустить» — выбери окно Telegram',
+              'Кликни по центру каждой карты один раз (калибровка сохранится)',
+              'Дальше всё автоматически: OCR → GTO → результат на телефоне',
+            ].map((s, i) => (
               <div key={i} className="flex gap-2 text-sm text-zinc-400">
-                <span className="text-emerald-400 font-bold shrink-0">{i+1}.</span>
+                <span className="text-emerald-400 font-bold shrink-0">{i + 1}.</span>
                 <span>{s}</span>
               </div>
             ))}
@@ -379,10 +473,10 @@ export function ScreenScan() {
               onClick={() => startCapture(false)}
               className={cn('w-full px-6 py-3 rounded-xl font-bold text-sm transition-colors',
                 hasSaved ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700'
-                         : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-[0_0_20px_rgba(5,150,105,0.3)]'
+                          : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-[0_0_20px_rgba(5,150,105,0.3)]'
               )}
             >
-              {hasSaved ? '⟳ Перекалибровать и запустить' : 'Начать захват экрана'}
+              {hasSaved ? '⟳ Перекалибровать' : 'Начать захват экрана'}
             </button>
           </div>
           {error && <p className="text-red-400 text-sm">{error}</p>}
@@ -397,11 +491,7 @@ export function ScreenScan() {
         </div>
       )}
 
-      {/*
-        ── CAPTURE VIEW ──
-        Always rendered in the DOM so videoRef.current is never null.
-        Hidden via CSS when not in a capture phase.
-      */}
+      {/* ── CAPTURE VIEW — always in DOM so videoRef.current is never null ── */}
       <div className={cn('flex flex-col lg:flex-row flex-1 gap-0', !captureActive && 'hidden')}>
 
         {/* Video + overlays */}
@@ -416,40 +506,56 @@ export function ScreenScan() {
 
           {/* Calibration dots */}
           {phase === 'calibrating' && regions.map((r, i) => (
-            <div key={i} className="absolute w-6 h-6 rounded-full border-2 border-white bg-emerald-500/80 -translate-x-3 -translate-y-3 pointer-events-none z-10"
-              style={{ left: `${r.cx * 100}%`, top: `${r.cy * 100}%` }}>
+            <div key={i}
+              className="absolute w-6 h-6 rounded-full border-2 border-white bg-emerald-500/80 -translate-x-3 -translate-y-3 pointer-events-none z-10"
+              style={{ left: `${r.cx * 100}%`, top: `${r.cy * 100}%` }}
+            >
               <span className="absolute text-[8px] font-bold text-white left-7 top-0.5 bg-black/70 px-1 rounded whitespace-nowrap">{r.label}</span>
             </div>
           ))}
 
           {/* Scan dots */}
           {phase === 'scanning' && regions.map((r, i) => (
-            <div key={i} className={cn('absolute w-3 h-3 rounded-full border border-white/50 -translate-x-1.5 -translate-y-1.5 pointer-events-none z-10', i < 2 ? 'bg-emerald-400/50' : 'bg-blue-400/50')}
-              style={{ left: `${r.cx * 100}%`, top: `${r.cy * 100}%` }} />
+            <div key={i}
+              className={cn('absolute w-3 h-3 rounded-full border border-white/50 -translate-x-1.5 -translate-y-1.5 pointer-events-none z-10',
+                i < 2 ? 'bg-emerald-400/60' : 'bg-blue-400/60'
+              )}
+              style={{ left: `${r.cx * 100}%`, top: `${r.cy * 100}%` }}
+            />
           ))}
 
-          {/* Calibration overlay */}
+          {/* Calibration UI */}
           {phase === 'calibrating' && (
             <div className="absolute bottom-0 left-0 right-0 bg-black/85 backdrop-blur-sm p-4 space-y-3 z-20">
-              <p className="text-center text-sm font-bold text-emerald-400">{CALIBRATION_STEPS[calStep]?.hint}</p>
+              <p className="text-center text-sm font-bold text-emerald-400">
+                {CALIBRATION_STEPS[calStep]?.hint}
+              </p>
               <div className="flex gap-2 justify-center">
-                {calStep >= 2 && <button onClick={skipCard} className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded-lg text-sm text-zinc-300">Пропустить</button>}
-                <button onClick={stopAll} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm text-zinc-500">Отмена</button>
+                {calStep >= 2 && (
+                  <button onClick={skipCard} className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded-lg text-sm text-zinc-300">
+                    Пропустить
+                  </button>
+                )}
+                <button onClick={stopAll} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm text-zinc-500">
+                  Отмена
+                </button>
               </div>
               <div className="flex justify-center gap-1.5">
                 {CALIBRATION_STEPS.map((_, i) => (
-                  <div key={i} className={cn('w-2 h-2 rounded-full', i < calStep ? 'bg-emerald-500' : i === calStep ? 'bg-white' : 'bg-zinc-700')} />
+                  <div key={i} className={cn('w-2 h-2 rounded-full',
+                    i < calStep ? 'bg-emerald-500' : i === calStep ? 'bg-white' : 'bg-zinc-700'
+                  )} />
                 ))}
               </div>
             </div>
           )}
 
-          {/* OCR loading */}
+          {/* Loading OCR */}
           {phase === 'loading-ocr' && (
             <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-3 z-20">
               <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
               <p className="text-sm text-zinc-300">Загрузка OCR движка...</p>
-              <p className="text-xs text-zinc-500">Один раз ~5 сек</p>
+              <p className="text-xs text-zinc-500">Первый запуск ~5 сек</p>
             </div>
           )}
 
@@ -458,52 +564,61 @@ export function ScreenScan() {
             <div className="absolute top-2 left-2 right-2 flex items-center justify-between z-20">
               <div className="flex items-center gap-2 bg-black/70 rounded-full px-3 py-1 backdrop-blur-sm">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span className="text-xs text-zinc-300">Скан #{scanCount}</span>
-                {analyzing && <span className="text-xs text-amber-400 animate-pulse">OCR...</span>}
+                <span className="text-xs text-zinc-300">#{scanCount}</span>
+                {analyzing && <span className="text-xs text-amber-400 animate-pulse">OCR…</span>}
                 {diffPct > 0 && <span className="text-xs text-zinc-600">Δ{diffPct}%</span>}
               </div>
-              <button onClick={stopAll} className="bg-black/70 rounded-full px-3 py-1 text-xs text-zinc-400 hover:text-red-400 backdrop-blur-sm">✕ Стоп</button>
+              <button onClick={stopAll} className="bg-black/70 rounded-full px-3 py-1 text-xs text-zinc-400 hover:text-red-400 backdrop-blur-sm">
+                ✕ Стоп
+              </button>
             </div>
           )}
         </div>
 
-        {/* ── RIGHT PANEL (scanning only) ── */}
+        {/* ── RIGHT PANEL ── */}
         {phase === 'scanning' && (
           <div className="w-full lg:w-80 bg-zinc-950 border-t lg:border-t-0 lg:border-l border-zinc-800 flex flex-col overflow-y-auto">
 
-            {/* Action */}
+            {/* Action box */}
             {advice ? (
               <div className={cn('p-5 text-center transition-all duration-300', advice.color)}>
                 <div className="text-5xl font-black tracking-widest text-white drop-shadow-lg">{advice.displayText}</div>
-                {advice.sizing  && <div className="text-white/80 text-base font-bold mt-1">{advice.sizing}</div>}
+                {advice.sizing   && <div className="text-white/80 text-base font-bold mt-1">{advice.sizing}</div>}
                 <div className="text-white/70 text-sm mt-0.5">{advice.handCategory}</div>
                 {advice.handName && <div className="text-white/60 text-xs mt-0.5">{advice.handName}</div>}
               </div>
             ) : (
               <div className="p-5 text-center bg-zinc-900 border-b border-zinc-800">
-                <p className="text-zinc-500 text-sm">Анализирую экран...</p>
+                <p className="text-zinc-500 text-sm">Анализирую экран…</p>
+                <p className="text-zinc-700 text-xs mt-1">Настрой «Размер карты» ниже если OCR не видит карты</p>
               </div>
             )}
 
             <div className="p-3 space-y-3 flex-1 overflow-y-auto">
 
-              {/* Win prob bar */}
+              {/* Win prob */}
               {advice && (
                 <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
                   <div className="flex items-center justify-between mb-1.5">
                     <span className="text-zinc-500 text-xs uppercase tracking-widest">Win Prob</span>
-                    <span className={cn('text-xl font-black', advice.equity > 0.6 ? 'text-emerald-400' : advice.equity > 0.4 ? 'text-amber-400' : 'text-red-400')}>
+                    <span className={cn('text-xl font-black',
+                      advice.equity > 0.6 ? 'text-emerald-400' : advice.equity > 0.4 ? 'text-amber-400' : 'text-red-400'
+                    )}>
                       {(advice.equity * 100).toFixed(0)}%
                     </span>
                   </div>
                   <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
-                    <div className={cn('h-full rounded-full transition-all duration-700', advice.equity > 0.6 ? 'bg-emerald-500' : advice.equity > 0.4 ? 'bg-amber-500' : 'bg-red-500')}
-                      style={{ width: `${advice.equity * 100}%` }} />
+                    <div
+                      className={cn('h-full rounded-full transition-all duration-700',
+                        advice.equity > 0.6 ? 'bg-emerald-500' : advice.equity > 0.4 ? 'bg-amber-500' : 'bg-red-500'
+                      )}
+                      style={{ width: `${advice.equity * 100}%` }}
+                    />
                   </div>
                 </div>
               )}
 
-              {/* Details */}
+              {/* Advice details */}
               {advice?.details.length ? (
                 <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 space-y-1.5">
                   {advice.details.map((d, i) => (
@@ -532,12 +647,12 @@ export function ScreenScan() {
                 </div>
               )}
 
-              {/* Draw info */}
+              {/* Draws */}
               {advice?.draws && advice.draws.totalOuts > 0 && (
                 <div className="bg-teal-950/50 border border-teal-800/50 rounded-lg p-3">
                   <p className="text-teal-400 text-xs font-bold mb-1">ДРОУ</p>
                   <p className="text-teal-300 text-sm">{advice.draws.description}</p>
-                  <p className="text-teal-600 text-xs mt-1">{advice.draws.totalOuts} outs → ~{advice.draws.equityRiver}% equity</p>
+                  <p className="text-teal-600 text-xs mt-1">{advice.draws.totalOuts} outs → ~{advice.draws.equityRiver}%</p>
                 </div>
               )}
 
@@ -599,13 +714,38 @@ export function ScreenScan() {
                 </div>
                 <div className="flex items-center gap-2">
                   <label className="text-zinc-600 text-xs shrink-0">Игроков: {players}</label>
-                  <input type="range" min={2} max={9} value={players} onChange={e => setPlayers(Number(e.target.value))} className="flex-1 accent-emerald-500" />
+                  <input type="range" min={2} max={9} value={players}
+                    onChange={e => setPlayers(Number(e.target.value))} className="flex-1 accent-emerald-500" />
                 </div>
+              </div>
+
+              {/* Card size tuner — adjust if OCR reads wrong cards */}
+              <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-zinc-500 text-xs uppercase tracking-widest">Размер карты</p>
+                  <span className="text-emerald-400 text-xs font-bold">{cardSizePct}% высоты</span>
+                </div>
+                <input type="range" min={4} max={22} step={1} value={cardSizePct}
+                  onChange={e => {
+                    const v = Number(e.target.value);
+                    setCardSizePct(v);
+                    const saved = loadCalibration();
+                    if (saved) saveCalibration(saved.regions, v);
+                    fingerprintCache.current.clear(); // force re-OCR
+                  }}
+                  className="w-full accent-emerald-500"
+                />
+                <p className="text-zinc-700 text-xs">
+                  Если карты определяются неверно — перемести ползунок. Типичные значения: 7–12%.
+                </p>
               </div>
 
               {lastScan && (
                 <div className="flex items-center justify-between text-zinc-700 text-xs">
-                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />LIVE → телефон</span>
+                  <span className="flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    LIVE → телефон
+                  </span>
                   <span>{lastScan}</span>
                 </div>
               )}
@@ -613,6 +753,7 @@ export function ScreenScan() {
               <button
                 onClick={() => {
                   if (scanLoopRef.current) { clearInterval(scanLoopRef.current); scanLoopRef.current = null; }
+                  fingerprintCache.current.clear();
                   setPhase('calibrating'); setRegions([]); setCalStep(0);
                   setAdvice(null); setHoleCards([]); setBoardCards([]);
                   prevPixels.current = null;
