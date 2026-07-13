@@ -5,7 +5,7 @@
 import {
   type Card, type Suit, type Rank,
   evaluateHand, HandRank, runMonteCarloSim, getPreflopEquity,
-  createDeck, RANK_CHARS,
+  createDeck, RANK_CHARS, PREFLOP_EQUITY, getHandKey,
   type SimulationResult,
 } from './poker';
 
@@ -116,36 +116,127 @@ export function getBluffRead(
   return { label, score, reasons };
 }
 
-// ─── GTO Preflop Ranges ───────────────────────────────────────────────────────
-// Equity thresholds to open raise first-in (RFI) by position
-// Based on 6-max GTO opening frequencies
-const RFI_EQUITY: Record<Position, number> = {
-  UTG: 63.0,  // ~13% range
-  MP:  61.5,  // ~17% range
-  HJ:  59.0,  // ~22% range
-  CO:  56.5,  // ~30% range
-  BTN: 53.0,  // ~45% range
-  SB:  55.0,  // ~35% range vs BB
-  BB:  0,     // BB always acts last preflop
-};
+// ─── GTO Preflop Ranges (mixed-frequency matrices) ─────────────────────────────
+// Real solvers almost never play a hand as a pure 100%/0% raise-or-fold —
+// hands at the edge of a range are played as a genuine mix (e.g. "raise 40%
+// of the time, fold the rest") to stay balanced. Instead of one flat equity
+// threshold per position, every one of the 169 starting hands is ranked by a
+// "playability score" and given a smooth frequency ramp around each
+// position's target range size, so borderline hands come back with an actual
+// mixed strategy rather than a hard cutoff.
 
-// Min pair rank to open RFI by position (pairs have lower equity but are openable)
-const RFI_MIN_PAIR: Record<Position, Rank> = {
-  UTG: 8 as Rank,  // 88+
-  MP:  7 as Rank,  // 77+
-  HJ:  6 as Rank,  // 66+
-  CO:  2 as Rank,  // 22+
-  BTN: 2 as Rank,  // 22+
-  SB:  2 as Rank,  // 22+
-  BB:  2 as Rank,
-};
+// Pairs get a playability bonus over raw preflop equity: their set-mining /
+// implied-odds value lets them be opened profitably well below the equity
+// non-paired hands would need at the same position.
+const PAIR_PLAYABILITY_BONUS = 10;
 
-// 3bet equity thresholds (value 3bets)
-const THREBET_VALUE_EQUITY = 73;  // TT+, AQs+, AKo
-// 3bet range when facing raise
-const CALL_FACING_RAISE: Record<Position, number> = {
-  UTG: 65, MP: 63, HJ: 61, CO: 59, BTN: 57, SB: 60, BB: 56,
+function getPlayabilityScore(key: string): number {
+  const equity = PREFLOP_EQUITY[key] ?? 0;
+  const isPair = key.length === 2; // e.g. "AA"
+  return isPair ? equity + PAIR_PLAYABILITY_BONUS : equity;
+}
+
+const HAND_KEYS_BY_PLAYABILITY: string[] = Object.keys(PREFLOP_EQUITY)
+  .sort((a, b) => getPlayabilityScore(b) - getPlayabilityScore(a));
+
+// Percentile rank of each hand key: ~0.6 = the single best hand (AA), 100 = the worst.
+const PLAYABILITY_PERCENTILE: Record<string, number> = {};
+HAND_KEYS_BY_PLAYABILITY.forEach((key, i) => {
+  PLAYABILITY_PERCENTILE[key] = ((i + 1) / HAND_KEYS_BY_PLAYABILITY.length) * 100;
+});
+
+// Target RFI opening percentage per position (center of the mixed-frequency
+// zone) — same ballpark as 6-max GTO opening frequencies, now driving a ramp
+// instead of a hard cutoff.
+const RFI_OPEN_PCT: Record<Position, number> = {
+  UTG: 15, MP: 19, HJ: 24, CO: 32, BTN: 48, SB: 38, BB: 100, // BB never RFIs preflop
 };
+const RFI_MIX_BAND = 6; // width (in percentile points) of the mixed-frequency zone
+
+// Fraction (0..1) of the time a solver-shaped strategy raises this hand
+// first-in from this position: 1 = always, 0 = never, in-between = a real mix.
+function getRFIFrequency(percentile: number, position: Position): number {
+  const target = RFI_OPEN_PCT[position];
+  const lo = target - RFI_MIX_BAND / 2;
+  const hi = target + RFI_MIX_BAND / 2;
+  if (percentile <= lo) return 1;
+  if (percentile >= hi) return 0;
+  return 1 - (percentile - lo) / (hi - lo);
+}
+
+// Facing a raise: target value-3bet % and total continuing (3bet + call) %
+// per position — rough solver-shaped approximation, each with its own
+// mixed-frequency band around the cutoff.
+const THREEBET_VALUE_PCT: Record<Position, number> = {
+  UTG: 3.5, MP: 4, HJ: 4.5, CO: 5.5, BTN: 7, SB: 6, BB: 6,
+};
+const CONTINUE_VS_RAISE_PCT: Record<Position, number> = {
+  UTG: 12, MP: 15, HJ: 18, CO: 22, BTN: 28, SB: 20, BB: 24,
+};
+const FACING_RAISE_MIX_BAND = 5;
+
+function getThreeBetFrequency(percentile: number, position: Position): number {
+  const target = THREEBET_VALUE_PCT[position];
+  const lo = Math.max(0, target - FACING_RAISE_MIX_BAND / 2);
+  const hi = target + FACING_RAISE_MIX_BAND / 2;
+  if (percentile <= lo) return 1;
+  if (percentile >= hi) return 0;
+  return 1 - (percentile - lo) / (hi - lo);
+}
+
+function getContinueFrequency(percentile: number, position: Position): number {
+  const target = CONTINUE_VS_RAISE_PCT[position];
+  const lo = Math.max(0, target - FACING_RAISE_MIX_BAND / 2);
+  const hi = target + FACING_RAISE_MIX_BAND / 2;
+  if (percentile <= lo) return 1;
+  if (percentile >= hi) return 0;
+  return 1 - (percentile - lo) / (hi - lo);
+}
+
+export interface PreflopFrequencies {
+  raise: number; // RFI raise, or 3bet (value + light bluff) when facing a raise
+  call: number;
+  fold: number;
+  isMixed: boolean; // true when no single action reaches ~80%+ — a genuine solver-style mix
+}
+
+// Core frequency table, keyed by hand string (e.g. "AKs") so it can drive
+// both the live advisor and the preflop chart from the same numbers.
+export function getPreflopFrequencies(
+  handKey: string,
+  position: Position,
+  facingRaise = false,
+): PreflopFrequencies {
+  const percentile = PLAYABILITY_PERCENTILE[handKey] ?? 100;
+  const isSuited = handKey.endsWith('s');
+
+  if (facingRaise) {
+    const valueThreeBetFreq = getThreeBetFrequency(percentile, position);
+    const continueFreq = getContinueFrequency(percentile, position);
+    const callFreq = Math.max(0, continueFreq - valueThreeBetFreq);
+
+    // Light 3bet bluff: suited hands from BTN/CO just past the flat-call
+    // range get 3bet a portion of the time instead of an automatic fold —
+    // solvers use suited blockers/playability this way to stay balanced.
+    let bluffFreq = 0;
+    if ((position === 'BTN' || position === 'CO') && isSuited) {
+      const callTarget = CONTINUE_VS_RAISE_PCT[position];
+      if (percentile > callTarget && percentile <= callTarget + 15) {
+        bluffFreq = 0.3 * (1 - (percentile - callTarget) / 15);
+      }
+    }
+
+    const raise = Math.min(1, valueThreeBetFreq + bluffFreq);
+    const fold = Math.max(0, 1 - raise - callFreq);
+    const isMixed = Math.max(raise, callFreq, fold) < 0.8;
+    return { raise, call: callFreq, fold, isMixed };
+  }
+
+  const raise = getRFIFrequency(percentile, position);
+  const fold = 1 - raise;
+  const isMixed = raise > 0.15 && raise < 0.85;
+  return { raise, call: 0, fold, isMixed };
+}
 
 // ─── Preflop advice ───────────────────────────────────────────────────────────
 
@@ -154,47 +245,38 @@ export function getGTOPreflopAdvice(
   position: Position,
   facingRaise = false,
   stackBBs = 100,
-): { action: 'RAISE' | '3BET' | 'CALL' | 'FOLD'; reason: string; strength: string } {
-  if (holeCards.length !== 2) return { action: 'FOLD', reason: 'Нет карт', strength: 'Unknown' };
+): { action: 'RAISE' | '3BET' | 'CALL' | 'FOLD'; reason: string; strength: string; frequencies: PreflopFrequencies } {
+  if (holeCards.length !== 2) {
+    return { action: 'FOLD', reason: 'Нет карт', strength: 'Unknown', frequencies: { raise: 0, call: 0, fold: 1, isMixed: false } };
+  }
 
   const equity = getPreflopEquity(holeCards);
-  const isPair = holeCards[0].rank === holeCards[1].rank;
-  const pairRank = isPair ? holeCards[0].rank : 0;
+  const key = getHandKey(holeCards[0], holeCards[1]);
 
-  // Hand strength label
   let strength = 'Weak';
   if (equity >= 78) strength = 'Premium';
   else if (equity >= 67) strength = 'Strong';
   else if (equity >= 60) strength = 'Medium';
   else if (equity >= 54) strength = 'Speculative';
 
+  const frequencies = getPreflopFrequencies(key, position, facingRaise);
+  const mixNote = frequencies.isMixed ? ' — смешанная стратегия, не 100%/0%' : '';
+
   if (facingRaise) {
-    // Value 3bet: AA, KK, QQ, JJ (77+/TT+), AKs, AKo, AQs
-    if (equity >= THREBET_VALUE_EQUITY || (isPair && pairRank >= 10)) {
-      return { action: '3BET', reason: `Топ-диапазон → 3bet ценность (${equity.toFixed(0)}% equity)`, strength };
+    if (frequencies.raise >= frequencies.call && frequencies.raise >= frequencies.fold) {
+      return { action: '3BET', reason: `3bet (${equity.toFixed(0)}% equity, солвер: ${(frequencies.raise * 100).toFixed(0)}%)${mixNote}`, strength, frequencies };
     }
-    // Light 3bet: BTN/CO suited connectors (semi-bluff)
-    const isSuited = holeCards[0].suit === holeCards[1].suit;
-    if ((position === 'BTN' || position === 'CO') && isSuited && equity >= 56 && equity < 61) {
-      return { action: '3BET', reason: `Suited ${position} → 3bet блеф (поляризация)`, strength };
+    if (frequencies.call >= frequencies.fold) {
+      return { action: 'CALL', reason: `Колл против рейза (${equity.toFixed(0)}% equity, ${position}, солвер: ${(frequencies.call * 100).toFixed(0)}%)${mixNote}`, strength, frequencies };
     }
-    const callThreshold = CALL_FACING_RAISE[position];
-    if (equity >= callThreshold || (isPair && pairRank >= 5 && position !== 'UTG')) {
-      return { action: 'CALL', reason: `Колл против рейза (${equity.toFixed(0)}% equity, ${position})`, strength };
-    }
-    return { action: 'FOLD', reason: `Вне диапазона колла для ${position} против рейза`, strength };
+    return { action: 'FOLD', reason: `Вне диапазона колла для ${position} против рейза (солвер: fold ${(frequencies.fold * 100).toFixed(0)}%)${mixNote}`, strength, frequencies };
   }
 
-  // RFI (raise first in)
-  const threshold = RFI_EQUITY[position];
-  const minPair = RFI_MIN_PAIR[position];
-  const canOpen = isPair ? pairRank >= minPair : equity >= threshold;
-
-  if (canOpen) {
+  if (frequencies.raise >= 0.5) {
     const sizing = stackBBs <= 20 ? 'ALL-IN' : stackBBs <= 40 ? '3BB' : '2.5BB';
-    return { action: 'RAISE', reason: `${position} RFI → ${sizing} (${equity.toFixed(0)}% equity)`, strength };
+    return { action: 'RAISE', reason: `${position} RFI → ${sizing} (${equity.toFixed(0)}% equity, солвер: raise ${(frequencies.raise * 100).toFixed(0)}%)${mixNote}`, strength, frequencies };
   }
-  return { action: 'FOLD', reason: `Вне диапазона открытия для ${position} (${equity.toFixed(0)}% equity)`, strength };
+  return { action: 'FOLD', reason: `Вне диапазона открытия для ${position} (солвер: raise только ${(frequencies.raise * 100).toFixed(0)}%)${mixNote}`, strength, frequencies };
 }
 
 // ─── Draw Detection ───────────────────────────────────────────────────────────
@@ -543,6 +625,15 @@ export function getFullAdvice(
       details.push(preflopAdvice.reason);
     }
     details.push(`Equity: ${getPreflopEquity(holeCards).toFixed(0)}% vs случайной`);
+    if (preflopAdvice.frequencies.isMixed) {
+      const f = preflopAdvice.frequencies;
+      const parts = [
+        f.raise > 0.02 ? `${betToCall > 0 ? '3bet' : 'raise'} ${(f.raise * 100).toFixed(0)}%` : null,
+        f.call > 0.02 ? `call ${(f.call * 100).toFixed(0)}%` : null,
+        f.fold > 0.02 ? `fold ${(f.fold * 100).toFixed(0)}%` : null,
+      ].filter(Boolean);
+      details.push(`GTO-микс на границе диапазона: ${parts.join(' / ')}`);
+    }
     return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory: preflopAdvice.strength, handName: null, draws: null, sizing, ev: evResult, bluffRead: null, usedRangeVsRange: false, villainRangePct: null };
   }
 
