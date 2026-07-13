@@ -377,10 +377,15 @@ export function ScreenScan() {
       setBoardCards(board);
 
       if (hole.length === 2) {
-        const sim = runMonteCarloSim(hole, board, players, 3000);
+        // Fewer unknown cards later in the hand → fewer iterations needed for
+        // a stable estimate, so we spend less time simulating when speed matters most.
+        const iterations = board.length === 0 ? 400 : board.length === 3 ? 1500 : board.length === 4 ? 900 : 300;
+        const sim = runMonteCarloSim(hole, board, players, iterations);
         const fa  = getFullAdvice(hole, board, potSize ?? 0, betToCall ?? 0, players, position, sim);
         setAdvice(fa);
-        await pushAnalysis({
+        // Fire-and-forget: don't block the next scan tick on network latency —
+        // Telegram/phone push happens in the background while OCR keeps going.
+        pushAnalysis({
           holeCards:  hole.map(c => `${c.rank}${c.suit}`),
           boardCards: board.map(c => `${c.rank}${c.suit}`),
           action: fa.action, displayText: fa.displayText, color: fa.color,
@@ -416,15 +421,15 @@ export function ScreenScan() {
       if (prevPixels.current) {
         const d = frameDiff(prevPixels.current, curr);
         setDiffPct(Math.round(d * 100));
-        changed = d > 0.02;
+        changed = d > 0.012;
       }
       prevPixels.current = new Uint8ClampedArray(curr);
 
-      if ((changed || ticks >= 5) && !analyzingRef.current) {
+      if ((changed || ticks >= 3) && !analyzingRef.current) {
         ticks = 0;
         await runOCR(canvas, regs, getSizePct());
       }
-    }, 700);
+    }, 350);
     scanLoopRef.current = loop;
   }, [captureToCanvas, runOCR]);
 
