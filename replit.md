@@ -12,7 +12,9 @@ A poker advisor web app that analyzes hands, shows preflop charts, tracks histor
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string (auto-provisioned)
-- Required env: `OPENROUTER_API_KEY` — needed for the screen/card scanner (`POST /api/scan-cards`), which calls `google/gemma-4-31b-it:free` via OpenRouter. Not yet set.
+- Required env: `OPENROUTER_API_KEY` — needed for the camera-based card scanner (`POST /api/scan-cards`, `CameraScan.tsx`), which calls `google/gemma-4-31b-it:free` via OpenRouter. Not yet set — this feature (photo of table → AI reads cards) is inactive without it. The screen-scan auto-pilot (`ScreenScan.tsx`) does NOT need this — it reads cards locally via Tesseract OCR.
+- Required secret: `TELEGRAM_BOT_TOKEN` — set. Powers automatic push of fold/call/raise decisions to the user's Telegram while `ScreenScan` (🖥️ Экран tab) is running.
+- Telegram chat_id is auto-discovered (not a secret) — user sends `/start` to their bot once, then clicks "привязать" in the app's Telegram card, which calls `POST /api/telegram/link` (Telegram `getUpdates`) and persists the chat_id to `artifacts/api-server/data/telegram-config.json`. Re-link if the bot is recreated with a new token.
 
 ## Stack
 
@@ -33,7 +35,14 @@ _Populate as you build — non-obvious choices a reader couldn't infer from the 
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Poker Terminal helps a player make faster in-hand decisions:
+- **Analyzer** — manual hand input with Monte Carlo equity + GTO-based fold/call/raise/bet-sizing advice.
+- **🖥️ Экран (ScreenScan)** — fully automatic: user shares their screen once, calibrates card positions once, then the app OCRs hole/board cards every scan tick, runs the same equity/GTO engine, and pushes the decision to (a) any connected phone via `📱 Эфир` (WebSocket) and (b) the user's Telegram, with dedup so it only messages when the recommended action changes.
+- **Bluff read** — a heuristic (bet-sizing vs. pot, board texture, number of players, street) that labels a bet "вероятно блеф" / "похоже на вэлью" / "неопределённо". This reads betting patterns, not opponents' cards — always secondary to the equity/pot-odds math.
+- **📷 Камера (CameraScan)** — one-shot photo analysis via AI vision (OpenRouter), inactive until `OPENROUTER_API_KEY` is set.
+- **Preflop chart** and **History** tabs.
+
+No system can guarantee winning every hand — poker has hidden information and variance. The goal here is decisions close to optimal (GTO + solid math), not certainty.
 
 ## User preferences
 

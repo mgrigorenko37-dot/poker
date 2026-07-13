@@ -1,0 +1,2 @@
+- [Poker Terminal Telegram delivery](poker-terminal-telegram.md) — chat_id auto-discovery via getUpdates + local JSON persistence, dedup pattern for push notifications
+- [Poker Terminal bluff heuristic](poker-terminal-bluff-heuristic.md) — bet-sizing/board/street heuristic, not mind-reading; scope and caveats
