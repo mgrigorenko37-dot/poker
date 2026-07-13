@@ -4,12 +4,15 @@ A poker advisor web app that analyzes hands, shows preflop charts, tracks histor
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- Workflows: `API Server` (`artifacts/api-server`, port 8080) and `Poker Advisor` (`artifacts/poker-advisor`, port 20319) — both auto-start.
+- `pnpm --filter @workspace/api-server run dev` — run the API server directly
+- `pnpm --filter @workspace/poker-advisor run dev` — run the frontend directly (needs `PORT` and `BASE_PATH` env vars, see vite.config.ts)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- Required env: `DATABASE_URL` — Postgres connection string (auto-provisioned)
+- Required env: `OPENROUTER_API_KEY` — needed for the screen/card scanner (`POST /api/scan-cards`), which calls `google/gemma-4-31b-it:free` via OpenRouter. Not yet set.
 
 ## Stack
 
