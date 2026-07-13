@@ -54,7 +54,7 @@ router.post("/scan-cards", async (req, res): Promise<void> => {
   try {
     const response = await openai.chat.completions.create({
       // Free vision model on OpenRouter — no quotas
-      model: "qwen/qwen2-vl-7b-instruct:free",
+      model: "google/gemma-4-31b-it:free",
       max_tokens: 300,
       messages: [
         {
