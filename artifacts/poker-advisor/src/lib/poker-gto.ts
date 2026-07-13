@@ -39,6 +39,75 @@ export interface FullAdvice {
   draws: DrawInfo | null;
   sizing: string | null;   // e.g. "75% pot"
   ev: number | null;       // expected value in BB (if pot info available)
+  bluffRead: BluffRead | null;
+}
+
+export interface BluffRead {
+  label: 'Вероятно блеф' | 'Похоже на вэлью' | 'Неопределённо' | 'Поляризовано';
+  score: number;       // 0..1, higher = more likely a bluff
+  reasons: string[];
+}
+
+// ─── Bluff heuristic ──────────────────────────────────────────────────────────
+// IMPORTANT: this is a population-tendency heuristic based on bet sizing, board
+// texture and street — it cannot read an opponent's actual cards or intent.
+// Treat it as one extra input, never as certainty.
+export function getBluffRead(
+  betToCall: number,
+  potBeforeBet: number,
+  boardCards: Card[],
+  players: number,
+  street: 'flop' | 'turn' | 'river',
+): BluffRead | null {
+  if (betToCall <= 0 || potBeforeBet <= 0) return null;
+
+  const sizeRatio = betToCall / potBeforeBet; // bet as % of pot
+  const reasons: string[] = [];
+  let score = 0.5; // start neutral
+
+  // Overbets are polarized — either very strong or a pure bluff, rarely medium
+  if (sizeRatio >= 1.2) {
+    score += 0.15;
+    reasons.push(`Овербет (${(sizeRatio * 100).toFixed(0)}% пота) — диапазон поляризован: монстр или блеф, редко середина`);
+  } else if (sizeRatio <= 0.35) {
+    score -= 0.1;
+    reasons.push(`Маленькая ставка (${(sizeRatio * 100).toFixed(0)}% пота) — чаще вэлью/контроль пота, реже блеф`);
+  } else {
+    reasons.push(`Стандартный размер (${(sizeRatio * 100).toFixed(0)}% пота) — не даёт явного сигнала`);
+  }
+
+  // Scare cards (flush/straight completing cards, high cards on later streets) invite more bluffs
+  const suitCount: Record<string, number> = {};
+  for (const c of boardCards) suitCount[c.suit] = (suitCount[c.suit] || 0) + 1;
+  const monotoneOrFlush = Math.max(0, ...Object.values(suitCount)) >= 3;
+  if (monotoneOrFlush && street !== 'flop') {
+    score += 0.1;
+    reasons.push('Флеш-возможный борд на позднем стрите — чаще провоцирует блефы полукартами');
+  }
+
+  // More players in the pot = less credible bluffs (harder for a bluff to get through many ranges)
+  if (players >= 4) {
+    score -= 0.1;
+    reasons.push(`${players} игроков в раздаче — блефовать через многих сложнее, вероятнее вэлью`);
+  } else if (players === 2) {
+    score += 0.05;
+    reasons.push('Один на один — блефы гораздо чаще, чем в мультипоте');
+  }
+
+  // River is where bluffs either get through or die — sizing tells matter most here
+  if (street === 'river') {
+    reasons.push('Ривер — решающая улица для блефа, доверяй в первую очередь размеру ставки');
+  }
+
+  score = Math.max(0.05, Math.min(0.95, score));
+
+  let label: BluffRead['label'];
+  if (sizeRatio >= 1.2) label = 'Поляризовано';
+  else if (score >= 0.62) label = 'Вероятно блеф';
+  else if (score <= 0.4) label = 'Похоже на вэлью';
+  else label = 'Неопределённо';
+
+  return { label, score, reasons };
 }
 
 // ─── GTO Preflop Ranges ───────────────────────────────────────────────────────
@@ -299,6 +368,12 @@ export function getFullAdvice(
   let color: string;
   let sizing: string | null = null;
 
+  const street: 'flop' | 'turn' | 'river' =
+    boardCards.length === 3 ? 'flop' : boardCards.length === 4 ? 'turn' : 'river';
+  const bluffRead = !isPreflop
+    ? getBluffRead(betToCall, potSize, boardCards, players, street)
+    : null;
+
   // ── MONSTER: shove ──────────────────────────────────────────────────────────
   if (handRank !== null && handRank >= HandRank.FULL_HOUSE) {
     action = 'ALL_IN';
@@ -307,7 +382,7 @@ export function getFullAdvice(
     details.push(`${handName} — максимизируй пот`);
     details.push(`Вероятность победы: ${(w * 100).toFixed(0)}%`);
     if (mdf) details.push(`Вилланту нужно защищать ${(mdf * 100).toFixed(0)}% рук`);
-    return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory, handName, draws, sizing, ev: evResult };
+    return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory, handName, draws, sizing, ev: evResult, bluffRead };
   }
 
   // ── PREFLOP ─────────────────────────────────────────────────────────────────
@@ -332,7 +407,7 @@ export function getFullAdvice(
       details.push(preflopAdvice.reason);
     }
     details.push(`Equity: ${getPreflopEquity(holeCards).toFixed(0)}% vs случайной`);
-    return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory: preflopAdvice.strength, handName: null, draws: null, sizing, ev: evResult };
+    return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory: preflopAdvice.strength, handName: null, draws: null, sizing, ev: evResult, bluffRead: null };
   }
 
   // ── POST-FLOP ───────────────────────────────────────────────────────────────
@@ -386,6 +461,7 @@ export function getFullAdvice(
       details.push(`Win ${(w * 100).toFixed(0)}% >> pot odds ${(potOdds! * 100).toFixed(0)}%`);
       if (handName) details.push(handName);
       if (mdf) details.push(`Вилланту защищать ≥ ${(mdf * 100).toFixed(0)}% — давим`);
+      if (bluffRead) details.push(`Read виллана: ${bluffRead.label.toLowerCase()}`);
     } else if (shouldCall) {
       action = 'CALL'; displayText = 'CALL'; color = 'bg-blue-600';
       details.push(`Win ${(w * 100).toFixed(0)}% > pot odds ${(potOdds! * 100).toFixed(0)}%`);
@@ -396,13 +472,15 @@ export function getFullAdvice(
         details.push(`EV колла: ${callEV > 0 ? '+' : ''}${callEV.toFixed(1)} BB`);
       }
       if (mdf) details.push(`MDF: защищаем ${(mdf * 100).toFixed(0)}% диапазона`);
+      if (bluffRead) details.push(`Read: ${bluffRead.label.toLowerCase()}`);
     } else {
       action = 'FOLD'; displayText = 'FOLD'; color = 'bg-red-700';
       details.push(`Win ${(w * 100).toFixed(0)}% < pot odds ${potOdds !== null ? (potOdds * 100).toFixed(0) + '%' : '?'}`);
       if (draws) details.push(`Дроу: ${draws.totalOuts} outs (${draws.equityRiver}%) — недостаточно`);
       if (callEV !== null) details.push(`EV: ${callEV.toFixed(1)} BB (отрицательный)`);
+      if (bluffRead && bluffRead.label === 'Вероятно блеф') details.push(`Read: ${bluffRead.label.toLowerCase()} — но математика важнее ощущений`);
     }
   }
 
-  return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory, handName, draws, sizing, ev: evResult };
+  return { action, displayText, color, details, equity: w, potOdds, mdf, handCategory, handName, draws, sizing, ev: evResult, bluffRead };
 }

@@ -22,6 +22,7 @@ export interface LiveAnalysis {
     equityTurn: number;
     equityRiver: number;
   } | null;
+  bluffRead: { label: string; score: number; reasons: string[] } | null;
   potSize: number | null;
   betToCall: number | null;
   players: number;

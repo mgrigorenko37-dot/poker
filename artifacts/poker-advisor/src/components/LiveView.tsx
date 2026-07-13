@@ -24,6 +24,7 @@ interface LiveAnalysis {
   handCategory: string;
   handName: string | null;
   draws: DrawInfo | null;
+  bluffRead: { label: string; score: number; reasons: string[] } | null;
   potSize: number | null;
   betToCall: number | null;
   players: number;
@@ -259,6 +260,14 @@ export function LiveView() {
                 <p className="text-teal-500 text-xs mt-1">
                   {analysis.draws.totalOuts} outs → ~{analysis.draws.equityRiver}% equity
                 </p>
+              </div>
+            )}
+
+            {/* BLUFF READ */}
+            {analysis.bluffRead && (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
+                <p className="text-zinc-500 text-xs font-bold uppercase tracking-wider mb-1">Read виллана</p>
+                <p className="text-zinc-100 text-sm font-bold">{analysis.bluffRead.label}</p>
               </div>
             )}
           </div>

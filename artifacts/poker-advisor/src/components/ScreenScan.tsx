@@ -10,6 +10,7 @@ import { createWorker, type Worker } from 'tesseract.js';
 import { cn } from '@/lib/utils';
 import { runMonteCarloSim, parseCard, type Card } from '@/lib/poker';
 import { getFullAdvice, type FullAdvice, type Position } from '@/lib/poker-gto';
+import { TelegramSetup } from '@/components/TelegramSetup';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Phase = 'idle' | 'requesting' | 'calibrating' | 'loading-ocr' | 'scanning';
@@ -385,6 +386,7 @@ export function ScreenScan() {
           action: fa.action, displayText: fa.displayText, color: fa.color,
           details: fa.details, equity: fa.equity, potOdds: fa.potOdds, mdf: fa.mdf,
           handCategory: fa.handCategory, handName: fa.handName, draws: fa.draws,
+          bluffRead: fa.bluffRead,
           sizing: fa.sizing, potSize, betToCall, players, position,
         });
       }
@@ -480,6 +482,7 @@ export function ScreenScan() {
             </button>
           </div>
           {error && <p className="text-red-400 text-sm">{error}</p>}
+          <TelegramSetup />
         </div>
       )}
 
@@ -653,6 +656,24 @@ export function ScreenScan() {
                   <p className="text-teal-400 text-xs font-bold mb-1">ДРОУ</p>
                   <p className="text-teal-300 text-sm">{advice.draws.description}</p>
                   <p className="text-teal-600 text-xs mt-1">{advice.draws.totalOuts} outs → ~{advice.draws.equityRiver}%</p>
+                </div>
+              )}
+
+              {/* Bluff read — heuristic only, not mind-reading */}
+              {advice?.bluffRead && (
+                <div className={cn('rounded-lg p-3 border',
+                  advice.bluffRead.label === 'Вероятно блеф' ? 'bg-orange-950/50 border-orange-800/50' :
+                  advice.bluffRead.label === 'Похоже на вэлью' ? 'bg-blue-950/50 border-blue-800/50' :
+                  'bg-zinc-900 border-zinc-800'
+                )}>
+                  <p className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1">Read виллана</p>
+                  <p className="text-sm font-bold text-zinc-100">{advice.bluffRead.label}</p>
+                  <div className="mt-1.5 space-y-1">
+                    {advice.bluffRead.reasons.map((r, i) => (
+                      <p key={i} className="text-zinc-500 text-xs">▸ {r}</p>
+                    ))}
+                  </div>
+                  <p className="text-zinc-700 text-[10px] mt-1.5 italic">Эвристика по сайзингу/борду, не чтение карт — доверяй математике больше</p>
                 </div>
               )}
 
