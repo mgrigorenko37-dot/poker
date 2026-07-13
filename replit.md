@@ -1,6 +1,6 @@
-# [Project name]
+# Poker Terminal
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A poker advisor web app that analyzes hands, shows preflop charts, tracks history, and can scan cards from screenshots using AI.
 
 ## Run & Operate
 

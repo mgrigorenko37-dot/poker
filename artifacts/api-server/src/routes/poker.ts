@@ -4,19 +4,20 @@ import { ScanCardsBody } from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
-if (!process.env.OPENROUTER_API_KEY) {
-  throw new Error("OPENROUTER_API_KEY environment variable is required");
-}
-
 // OpenRouter uses OpenAI-compatible API — free vision models, no quotas
-const openai = new OpenAI({
-  apiKey: process.env.OPENROUTER_API_KEY,
-  baseURL: "https://openrouter.ai/api/v1",
-  defaultHeaders: {
-    "HTTP-Referer": "https://pokerterminal.app",
-    "X-Title": "Poker Terminal",
-  },
-});
+function getOpenAIClient(): OpenAI {
+  if (!process.env.OPENROUTER_API_KEY) {
+    throw new Error("OPENROUTER_API_KEY environment variable is required");
+  }
+  return new OpenAI({
+    apiKey: process.env.OPENROUTER_API_KEY,
+    baseURL: "https://openrouter.ai/api/v1",
+    defaultHeaders: {
+      "HTTP-Referer": "https://pokerterminal.app",
+      "X-Title": "Poker Terminal",
+    },
+  });
+}
 
 const prompt = `You are analyzing a poker game screenshot (TON Poker Telegram Mini App).
 
@@ -52,6 +53,7 @@ router.post("/scan-cards", async (req, res): Promise<void> => {
   const { imageBase64 } = parsed.data;
 
   try {
+    const openai = getOpenAIClient();
     const response = await openai.chat.completions.create({
       // Free vision model on OpenRouter — no quotas
       model: "google/gemma-4-31b-it:free",
