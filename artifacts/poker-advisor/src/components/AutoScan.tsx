@@ -38,8 +38,8 @@ export function AutoScan() {
     const canvas = canvasRef.current;
     if (!video || !canvas || video.readyState < 2) return null;
 
-    // Resize to max 800px wide to reduce token usage (full screen = too many tokens)
-    const MAX_WIDTH = 800;
+    // Resize to max 480px wide — enough for AI to read cards, minimal tokens
+    const MAX_WIDTH = 480;
     const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
     canvas.width = Math.round(video.videoWidth * scale);
     canvas.height = Math.round(video.videoHeight * scale);
@@ -49,7 +49,7 @@ export function AutoScan() {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     // Low quality JPEG to further reduce size
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.5);
     return dataUrl.split(',')[1];
   }, []);
 
@@ -243,7 +243,7 @@ export function AutoScan() {
       )}
 
       {/* CONTROLS */}
-      <div className="flex gap-3">
+      <div className="flex gap-3 flex-wrap">
         {status !== 'scanning' ? (
           <button
             data-testid="button-start-scan"
@@ -254,14 +254,23 @@ export function AutoScan() {
             Start Auto-Scan
           </button>
         ) : (
-          <button
-            data-testid="button-stop-scan"
-            onClick={stopScan}
-            className="flex items-center gap-2 px-6 py-3 bg-red-700 hover:bg-red-600 text-white rounded-lg font-bold transition-colors text-sm"
-          >
-            <span className="w-2 h-2 rounded-full bg-white inline-block" />
-            Stop Scanning
-          </button>
+          <>
+            <button
+              data-testid="button-scan-now"
+              onClick={analyzeFrame}
+              disabled={scanMutation.isPending}
+              className="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg font-bold transition-colors text-sm"
+            >
+              {scanMutation.isPending ? 'Analyzing...' : 'Scan Now'}
+            </button>
+            <button
+              data-testid="button-stop-scan"
+              onClick={stopScan}
+              className="flex items-center gap-2 px-5 py-3 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded-lg font-bold transition-colors text-sm"
+            >
+              Stop
+            </button>
+          </>
         )}
       </div>
 
