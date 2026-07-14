@@ -137,14 +137,18 @@ function detectSuit(card: HTMLCanvasElement): 'h'|'d'|'c'|'s' {
   const sw = Math.round(card.width  * 0.45);
   const sh = Math.round(card.height * 0.44);
   const d = ctx.getImageData(sx, sy, sw, sh).data;
-  let r = 0, g = 0, b = 0, n = 0;
+  const rs: number[] = [], gs: number[] = [], bs: number[] = [];
   for (let i = 0; i < d.length; i += 4) {
-    // skip near-white background pixels
-    if (d[i] > 200 && d[i+1] > 200 && d[i+2] > 200) continue;
-    r += d[i]; g += d[i+1]; b += d[i+2]; n++;
+    // skip near-white background AND near-black anti-aliased edge pixels —
+    // both pollute a mean-color estimate; only fully-saturated glyph pixels
+    // reliably carry the suit's true color.
+    const lum = (d[i] + d[i+1] + d[i+2]) / 3;
+    if (lum > 200 || lum < 20) continue;
+    rs.push(d[i]); gs.push(d[i+1]); bs.push(d[i+2]);
   }
-  if (!n) return 'h';
-  r /= n; g /= n; b /= n;
+  if (!rs.length) return 'h';
+  const median = (arr: number[]) => { const s = [...arr].sort((a,b)=>a-b); return s[Math.floor(s.length/2)]; };
+  const r = median(rs), g = median(gs), b = median(bs);
   if (r > 140 && g < 100 && b < 120) return 'h';   // red → hearts
   if (r > 140 && g < 120 && b > 120) return 'd';   // magenta-ish → diamonds
   if (r < 120 && g > 100 && b < 120) return 'c';   // green → clubs
@@ -335,12 +339,19 @@ const suitSym  = (s: string) => ({ h:'♥',d:'♦',c:'♣',s:'♠' }[s] ?? s);
 const suitCls  = (s: string) => s === 'h' || s === 'd' ? 'text-red-400' : 'text-zinc-200';
 const rankLabel = (r: number) => ({ 14:'A',13:'K',12:'Q',11:'J',10:'T' }[r] ?? String(r));
 
-// Process a list of regions with one worker (sequential within worker, safe)
-// Two safeguards against misreads:
-//  1. A blank/felt-looking region is treated as "no card" without OCR.
-//  2. A CHANGED reading is only committed after it appears twice in a row
-//     (one-tick debounce) — a single flickery OCR pass can't flip the slot,
-//     which matters because a bad flop card silently corrupts every downstream calc.
+// Minimum Tesseract confidence (0-100) to trust a rank reading. The rank crop is
+// already 5×-upscaled + Otsu-binarized, so a real glyph reads with high confidence;
+// a misaligned/garbled crop reads low. This replaces the old "wait two ticks" debounce
+// as the accuracy gate — it costs zero extra latency (rejected on the SAME tick) instead
+// of costing a full extra scan interval, which is critical when the user has ~5s to act.
+const RANK_CONFIDENCE_MIN = 45;
+
+// Process a list of regions with one worker (sequential within worker, safe).
+// Safeguards against misreads, in latency order (cheapest/fastest first):
+//  1. A blank/felt-looking region is treated as "no card" without OCR (free).
+//  2. A low-confidence OCR result is discarded and the last known value for that
+//     slot is kept — no card flips on a single bad read, but a GOOD read commits
+//     immediately (no multi-tick wait), so recognition speed matches scan speed.
 // A manual override (user tapped to correct a misread) short-circuits both,
 // staying in effect until the underlying pixels actually change.
 async function processRegions(
@@ -349,7 +360,6 @@ async function processRegions(
   regs: CardRegion[],
   cardW: number, cardH: number,
   fps: Map<string, { fp: string; card: Card | null }>,
-  pending: Map<string, { fp: string; card: Card | null }>,
   overrides: Map<string, { fp: string; card: Card | null }>,
 ): Promise<(Card | null)[]> {
   const results: (Card | null)[] = [];
@@ -358,7 +368,7 @@ async function processRegions(
     const fp  = regionFingerprint(src, region.cx, region.cy, cardW, cardH);
 
     const ov = overrides.get(key);
-    if (ov?.fp === fp) { fps.set(key, ov); pending.delete(key); results.push(ov.card); continue; }
+    if (ov?.fp === fp) { fps.set(key, ov); results.push(ov.card); continue; }
     if (ov) overrides.delete(key); // pixels moved on — manual fix no longer applies
 
     const cached = fps.get(key);
@@ -367,7 +377,6 @@ async function processRegions(
     const cardC = extractCardRegion(src, region.cx, region.cy, cardW, cardH);
     if (looksEmpty(cardC)) {
       fps.set(key, { fp, card: null });
-      pending.delete(key);
       results.push(null);
       continue;
     }
@@ -375,38 +384,37 @@ async function processRegions(
     const rankC = extractRankArea(cardC);
     const { data } = await worker.recognize(rankC);
     const rank = parseRank(data.text.trim());
+    if (!rank || data.confidence < RANK_CONFIDENCE_MIN) {
+      // Unreadable or low-confidence — don't guess; keep whatever was last shown for this slot.
+      results.push(cached?.card ?? null);
+      continue;
+    }
     const suit = detectSuit(cardC);
     let card: Card | null = null;
-    if (rank) { try { card = parseCard(`${rank}${suit}`); } catch {} }
-
-    const pend = pending.get(key);
-    if (pend && card && pend.card && pend.card.rank === card.rank && pend.card.suit === card.suit) {
-      fps.set(key, { fp, card });   // confirmed twice → commit
-      pending.delete(key);
+    try { card = parseCard(`${rank}${suit}`); } catch {}
+    if (card) {
+      fps.set(key, { fp, card }); // commit immediately — confidence gate is the safeguard now
       results.push(card);
-    } else if (!card && pend && pend.card === null) {
-      fps.set(key, { fp, card: null }); // confirmed empty twice
-      pending.delete(key);
-      results.push(null);
     } else {
-      pending.set(key, { fp, card });   // first sighting — wait for confirmation
       results.push(cached?.card ?? null);
     }
   }
   return results;
 }
 
-// Read one money region (pot or bet-to-call). Same safeguards as card OCR:
-// skip re-reading unchanged pixels via fingerprint, and require a changed
-// value to repeat on two consecutive ticks before committing it — a single
-// misread digit shouldn't be able to swing the pot-odds math.
+// Minimum confidence for a money (pot/bet) OCR reading — same rationale as
+// RANK_CONFIDENCE_MIN: gate on quality, not on waiting an extra tick.
+const MONEY_CONFIDENCE_MIN = 40;
+
+// Read one money region (pot or bet-to-call). Same safeguard shape as card OCR:
+// skip re-reading unchanged pixels via fingerprint, and discard a low-confidence
+// reading instead of waiting a tick to confirm it — commits instantly when clean.
 async function processMoneyRegion(
   worker: Worker,
   src: HTMLCanvasElement,
   region: CardRegion,
   wPct: number, hPct: number,
   fps: Map<string, { fp: string; value: number | null }>,
-  pending: Map<string, { fp: string; value: number | null }>,
 ): Promise<number | null | undefined> { // undefined = no change, caller keeps current UI value
   const key = region.label;
   const cw = Math.max(4, Math.round(src.width  * wPct / 100));
@@ -418,19 +426,11 @@ async function processMoneyRegion(
 
   const crop = extractTextRegion(src, region.cx, region.cy, wPct, hPct);
   const { data } = await worker.recognize(crop);
-  const value = parseMoneyText(data.text);
+  if (data.confidence < MONEY_CONFIDENCE_MIN) return undefined; // unreadable this tick — keep current value
 
-  const pend = pending.get(key);
-  if (pend && value !== null && pend.value === value) {
-    fps.set(key, { fp, value }); pending.delete(key);
-    return value;
-  }
-  if (pend && value === null && pend.value === null) {
-    fps.set(key, { fp, value: null }); pending.delete(key);
-    return undefined;
-  }
-  pending.set(key, { fp, value });
-  return undefined; // first sighting — wait for confirmation
+  const value = parseMoneyText(data.text);
+  fps.set(key, { fp, value });
+  return value ?? undefined;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -479,17 +479,15 @@ export function ScreenScan() {
   const workersRef   = useRef<Worker[]>([]);
   // Dedicated worker for pot/bet money OCR — different whitelist/PSM than cards
   const moneyWorkerRef = useRef<Worker | null>(null);
-  // Fingerprint + pending-confirmation caches for money regions, keyed 'pot'|'bet'
+  // Fingerprint cache for money regions, keyed 'pot'|'bet'
   const moneyFpCache      = useRef<Map<string, { fp: string; value: number | null }>>(new Map());
-  const moneyPendingCache = useRef<Map<string, { fp: string; value: number | null }>>(new Map());
   const streamRef    = useRef<MediaStream | null>(null);
   const scanLoopRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevPixels   = useRef<Uint8ClampedArray | null>(null);
   const analyzingRef = useRef(false);
-  // Per-region fingerprint cache (confirmed), pending (awaiting 2nd-read confirmation),
-  // and manual overrides (user tap-to-correct, valid until the region's pixels change)
+  // Per-region fingerprint cache (confirmed) and manual overrides (user
+  // tap-to-correct, valid until the region's pixels change)
   const fingerprintCache = useRef<Map<string, { fp: string; card: Card | null }>>(new Map());
-  const pendingCache      = useRef<Map<string, { fp: string; card: Card | null }>>(new Map());
   const overridesCache    = useRef<Map<string, { fp: string; card: Card | null }>>(new Map());
   const lastGoodRef       = useRef<{ hole: Card[]; board: Card[]; holeLabels: string[]; boardLabels: string[] }>({ hole: [], board: [], holeLabels: [], boardLabels: [] });
   const [dupWarning, setDupWarning] = useState<string | null>(null);
@@ -512,10 +510,8 @@ export function ScreenScan() {
     streamRef.current = null;
     prevPixels.current = null;
     fingerprintCache.current.clear();
-    pendingCache.current.clear();
     overridesCache.current.clear();
     moneyFpCache.current.clear();
-    moneyPendingCache.current.clear();
     lastGoodRef.current = { hole: [], board: [], holeLabels: [], boardLabels: [] };
     setPhase('idle');
     setRegions([]);
@@ -608,7 +604,7 @@ export function ScreenScan() {
     saveMoneyCalibration(auto);
     setMoneyCal(auto);
     setAutoPot(true); setAutoBet(true);
-    moneyFpCache.current.clear(); moneyPendingCache.current.clear();
+    moneyFpCache.current.clear();
   }, []);
 
   // Opponent seat/fold detection turns on by itself the same way — no clicks.
@@ -636,7 +632,7 @@ export function ScreenScan() {
     const cal: MoneyCalibration = { pot: draft.pot, bet: draft.bet, wPct: 9, hPct: 3.2, version: 1 };
     saveMoneyCalibration(cal);
     setMoneyCal(cal);
-    moneyFpCache.current.clear(); moneyPendingCache.current.clear();
+    moneyFpCache.current.clear();
     setAutoPot(!!draft.pot); setAutoBet(!!draft.bet);
     if (!moneyWorkerRef.current) {
       const w = await createWorker('eng', 1, { logger: () => {} });
@@ -740,7 +736,6 @@ export function ScreenScan() {
     if (!fp) return;
     overridesCache.current.set(key, { fp, card });
     fingerprintCache.current.set(key, { fp, card });
-    pendingCache.current.delete(key);
     rebuildFromCache();
   }, [rebuildFromCache]);
 
@@ -769,8 +764,8 @@ export function ScreenScan() {
 
       // Run both workers in parallel
       const [holeResults, boardResults] = await Promise.all([
-        processRegions(w1, canvas, holeRegs,  cardW, cardH, fingerprintCache.current, pendingCache.current, overridesCache.current),
-        processRegions(w2, canvas, boardRegs, cardW, cardH, fingerprintCache.current, pendingCache.current, overridesCache.current),
+        processRegions(w1, canvas, holeRegs,  cardW, cardH, fingerprintCache.current, overridesCache.current),
+        processRegions(w2, canvas, boardRegs, cardW, cardH, fingerprintCache.current, overridesCache.current),
       ]);
 
       const compact = (results: (Card | null)[], srcRegs: CardRegion[]) => {
@@ -823,16 +818,23 @@ export function ScreenScan() {
           bluffRead: fa.bluffRead,
           sizing: fa.sizing, potSize, betToCall, players, position,
         });
+      } else if (!hasDup) {
+        // Fewer than 2 hole cards recognized right now (new hand dealing, or a
+        // slot briefly unreadable) — clear any advice instead of leaving a stale
+        // decision on screen. With a 5s decision window, showing an old hand's
+        // "RAISE" while the new hand's cards aren't confirmed yet is actively
+        // dangerous, not just cosmetic.
+        setAdvice(null);
       }
       // ── Optional: OCR pot / bet-to-call from calibrated regions ──────────
       const mWorker = moneyWorkerRef.current;
       if (mWorker && moneyCal) {
         if (moneyCal.pot && autoPot) {
-          const v = await processMoneyRegion(mWorker, canvas, moneyCal.pot, moneyCal.wPct, moneyCal.hPct, moneyFpCache.current, moneyPendingCache.current);
+          const v = await processMoneyRegion(mWorker, canvas, moneyCal.pot, moneyCal.wPct, moneyCal.hPct, moneyFpCache.current);
           if (v !== undefined && v !== null) setPotSize(v);
         }
         if (moneyCal.bet && autoBet) {
-          const v = await processMoneyRegion(mWorker, canvas, moneyCal.bet, moneyCal.wPct, moneyCal.hPct, moneyFpCache.current, moneyPendingCache.current);
+          const v = await processMoneyRegion(mWorker, canvas, moneyCal.bet, moneyCal.wPct, moneyCal.hPct, moneyFpCache.current);
           if (v !== undefined && v !== null) setBetToCall(v);
         }
       }
@@ -881,11 +883,11 @@ export function ScreenScan() {
       }
       prevPixels.current = new Uint8ClampedArray(curr);
 
-      if ((changed || ticks >= 3) && !analyzingRef.current) {
+      if ((changed || ticks >= 2) && !analyzingRef.current) {
         ticks = 0;
         await runOCR(canvas, regs, getSizePct());
       }
-    }, 350);
+    }, 180);
     scanLoopRef.current = loop;
   }, [captureToCanvas, runOCR]);
 
@@ -1357,7 +1359,6 @@ export function ScreenScan() {
                     const saved = loadCalibration();
                     if (saved) saveCalibration(saved.regions, v);
                     fingerprintCache.current.clear(); // force re-OCR
-                    pendingCache.current.clear();
                     overridesCache.current.clear();
                   }}
                   className="w-full accent-emerald-500"
@@ -1381,7 +1382,6 @@ export function ScreenScan() {
                 onClick={() => {
                   if (scanLoopRef.current) { clearInterval(scanLoopRef.current); scanLoopRef.current = null; }
                   fingerprintCache.current.clear();
-                  pendingCache.current.clear();
                   overridesCache.current.clear();
                   lastGoodRef.current = { hole: [], board: [], holeLabels: [], boardLabels: [] };
                   setPhase('calibrating'); setRegions([]); setCalStep(0);
