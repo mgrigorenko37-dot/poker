@@ -185,17 +185,55 @@ function extractTextRegion(src: HTMLCanvasElement, cx: number, cy: number, wPct:
 }
 
 // Parse an OCR'd money string ("1,234", "1.2K", "850") into a number.
+// The search band can catch more than one number (stray digits, neighboring
+// UI elements), so we take the LARGEST match rather than the first — the
+// pot/call figure is virtually always the most prominent number in its band,
+// while OCR noise tends to produce small stray digits.
 // Returns null when nothing digit-like was recognized — callers must treat
 // that as "couldn't read this tick" rather than "value is zero".
 function parseMoneyText(raw: string): number | null {
-  const cleaned = raw.replace(/\s/g, '').replace(',', '.');
-  const m = cleaned.match(/(\d+(?:\.\d+)?)\s*([KkMm])?/);
-  if (!m) return null;
-  let val = parseFloat(m[1]);
-  if (Number.isNaN(val)) return null;
-  if (m[2] === 'K' || m[2] === 'k') val *= 1_000;
-  if (m[2] === 'M' || m[2] === 'm') val *= 1_000_000;
-  return val;
+  const cleaned = raw.replace(/\s/g, '').replace(/,(?=\d{3}\b)/g, ''); // "1,234" -> "1234"
+  const matches = [...cleaned.matchAll(/(\d+(?:\.\d+)?)\s*([KkMm])?/g)];
+  if (!matches.length) return null;
+  let best: number | null = null;
+  for (const m of matches) {
+    let val = parseFloat(m[1]);
+    if (Number.isNaN(val)) continue;
+    if (m[2] === 'K' || m[2] === 'k') val *= 1_000;
+    if (m[2] === 'M' || m[2] === 'm') val *= 1_000_000;
+    if (best === null || val > best) best = val;
+  }
+  return best;
+}
+
+// Derive pot/bet-to-call search bands automatically from the card calibration
+// the user already has to do — no extra clicks. Poker tables overwhelmingly
+// follow the same layout: community cards centered mid-table, hero's hole
+// cards at the bottom, pot total shown in the gap between them, and the
+// bet-to-call amount shown near the action buttons just below hero's cards.
+// These are heuristic defaults, not a guarantee for every table skin — the
+// manual "уточнить вручную" correction exists for when a specific client
+// doesn't match this layout.
+function computeAutoMoneyBands(regions: CardRegion[]): MoneyCalibration {
+  const holePts  = regions.filter(r => r.label.startsWith('Hole'));
+  const boardPts = regions.filter(r => r.label.startsWith('Board'));
+  const avg = (pts: CardRegion[]) => pts.length
+    ? { cx: pts.reduce((s, p) => s + p.cx, 0) / pts.length, cy: pts.reduce((s, p) => s + p.cy, 0) / pts.length }
+    : null;
+  const hole  = avg(holePts)  ?? { cx: 0.5, cy: 0.85 };
+  // If the board wasn't calibrated (e.g. preflop-only setup), assume it sits
+  // a quarter of the screen above the hole cards — a reasonable default.
+  const board = avg(boardPts) ?? { cx: hole.cx, cy: Math.max(0.1, hole.cy - 0.25) };
+
+  const potCy = board.cy + (hole.cy - board.cy) * 0.35; // between board and hole, closer to board
+  const betCy = Math.min(0.96, hole.cy + 0.13);          // just below hole cards, near action buttons
+
+  return {
+    pot: { label: 'Pot',  cx: (board.cx + hole.cx) / 2, cy: potCy },
+    bet: { label: 'Bet',  cx: hole.cx,                   cy: betCy },
+    wPct: 34, hPct: 7,
+    version: 1,
+  };
 }
 
 // Pixel fingerprint for a card region — used to skip OCR if card hasn't changed
@@ -467,6 +505,8 @@ export function ScreenScan() {
         if (saved) {
           setRegions(saved.regions);
           if (saved.cardSizePct) setCardSizePct(saved.cardSizePct);
+          // Backfill auto pot/bet bands for calibrations saved before this existed.
+          if (!loadMoneyCalibration()) autoSetupMoney(saved.regions);
           await loadOcr(saved.regions, true);
           return;
         }
@@ -511,11 +551,22 @@ export function ScreenScan() {
     if (next >= CALIBRATION_STEPS.length) {
       saveCalibration(newRegions, cardSizePct);
       setHasSaved(true);
+      autoSetupMoney(newRegions);
       await loadOcr(newRegions, true);
     } else {
       setCalStep(next);
     }
   }, [phase, calStep, regions, cardSizePct, subCal, moneyStepIdx, moneyDraft]);
+
+  // Pot/bet OCR turns on by itself the moment card calibration is done — no
+  // extra clicks. See computeAutoMoneyBands for the layout assumptions.
+  const autoSetupMoney = useCallback((finalRegions: CardRegion[]) => {
+    const auto = computeAutoMoneyBands(finalRegions);
+    saveMoneyCalibration(auto);
+    setMoneyCal(auto);
+    setAutoPot(true); setAutoBet(true);
+    moneyFpCache.current.clear(); moneyPendingCache.current.clear();
+  }, []);
 
   // ── Money (pot/bet) sub-calibration ───────────────────────────────────────
   const startMoneyCalibration = useCallback(() => {
@@ -571,6 +622,7 @@ export function ScreenScan() {
     if (next >= CALIBRATION_STEPS.length) {
       saveCalibration(regions, cardSizePct);
       setHasSaved(true);
+      autoSetupMoney(regions);
       await loadOcr(regions, true);
     } else {
       setCalStep(next);
@@ -593,8 +645,9 @@ export function ScreenScan() {
         await Promise.all([w1.setParameters(params), w2.setParameters(params)]);
         workersRef.current = [w1, w2];
       }
-      // Money worker may already be needed if pot/bet calibration was saved from a prior session
-      if (!moneyWorkerRef.current && (moneyCal?.pot || moneyCal?.bet)) {
+      // Money worker: pot/bet auto-detection is on by default now, so it's
+      // always needed (not conditional on a prior manual calibration).
+      if (!moneyWorkerRef.current) {
         const w = await createWorker('eng', 1, { logger: () => {} });
         await w.setParameters({ tessedit_char_whitelist: '0123456789.,KkMm', tessedit_pageseg_mode: '7' as any });
         moneyWorkerRef.current = w;
@@ -606,7 +659,7 @@ export function ScreenScan() {
       setError('Не удалось загрузить OCR движок');
       setPhase('calibrating');
     }
-  }, [moneyCal]);
+  }, []);
 
   // ── Manual correction ─────────────────────────────────────────────────────
   // Tap a detected card to fix a misread rank/suit. The override sticks until
@@ -1193,18 +1246,20 @@ export function ScreenScan() {
                       className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-emerald-600" />
                   </div>
                 </div>
-                <div className="flex gap-1.5">
-                  <button onClick={startMoneyCalibration}
-                    className="flex-1 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-xs text-amber-400">
-                    📷 {moneyCal ? 'Перекалибровать' : 'Настроить OCR банка/колла'}
-                  </button>
-                  {moneyCal && (
-                    <button onClick={clearMoneyCalibration}
-                      className="px-2 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-xs text-zinc-500">
-                      ✕
+                {moneyCal ? (
+                  <div className="flex items-center justify-between gap-1.5">
+                    <p className="text-zinc-700 text-[10px]">📷 Банк/колл читаются сами — ничего настраивать не нужно</p>
+                    <button onClick={startMoneyCalibration}
+                      className="shrink-0 py-1 px-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-[10px] text-zinc-500">
+                      Уточнить вручную
                     </button>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <button onClick={startMoneyCalibration}
+                    className="w-full py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-xs text-amber-400">
+                    📷 Настроить область банка/колла вручную
+                  </button>
+                )}
                 <div>
                   <label className="text-zinc-600 text-xs block mb-1">Позиция</label>
                   <select value={position} onChange={e => setPosition(e.target.value as Position)}
