@@ -17,6 +17,13 @@ import { CardPicker } from '@/components/CardPicker';
 type Phase = 'idle' | 'requesting' | 'calibrating' | 'loading-ocr' | 'scanning';
 interface CardRegion { label: string; cx: number; cy: number }
 interface SavedCalibration { regions: CardRegion[]; cardSizePct: number; version: number }
+// Optional sub-calibration flows, entered from the scanning panel (don't touch
+// the mandatory card calibration above). 'money' captures pot/bet-to-call text
+// positions for OCR; 'seats' captures opponent seat positions for fold/pixel
+// based player-count detection.
+type SubCal = null | 'money' | 'seats';
+interface MoneyCalibration { pot: CardRegion | null; bet: CardRegion | null; wPct: number; hPct: number; version: number }
+interface SeatCalibration { seats: CardRegion[]; sizePct: number; version: number }
 
 const CALIBRATION_STEPS = [
   { label: 'Hole 1',  hint: 'Кликни на ЦЕНТР первой своей карты' },
@@ -41,6 +48,28 @@ function loadCalibration(): SavedCalibration | null {
   try {
     const d: SavedCalibration = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
     return d?.version === 3 && d.regions?.length >= 2 ? d : null;
+  } catch { return null; }
+}
+
+const MONEY_STORAGE_KEY = 'poker_money_calibration_v1';
+const SEAT_STORAGE_KEY  = 'poker_seat_calibration_v1';
+
+function saveMoneyCalibration(m: MoneyCalibration) {
+  try { localStorage.setItem(MONEY_STORAGE_KEY, JSON.stringify(m)); } catch {}
+}
+function loadMoneyCalibration(): MoneyCalibration | null {
+  try {
+    const d: MoneyCalibration = JSON.parse(localStorage.getItem(MONEY_STORAGE_KEY) ?? 'null');
+    return d?.version === 1 && (d.pot || d.bet) ? d : null;
+  } catch { return null; }
+}
+function saveSeatCalibration(s: SeatCalibration) {
+  try { localStorage.setItem(SEAT_STORAGE_KEY, JSON.stringify(s)); } catch {}
+}
+function loadSeatCalibration(): SeatCalibration | null {
+  try {
+    const d: SeatCalibration = JSON.parse(localStorage.getItem(SEAT_STORAGE_KEY) ?? 'null');
+    return d?.version === 1 && d.seats?.length > 0 ? d : null;
   } catch { return null; }
 }
 
@@ -127,6 +156,46 @@ function parseRank(raw: string): string | null {
   if (!c) return null;
   if (c === '10' || c === '1O' || c === 'IO' || c === '1o') return 'T';
   return RANK_MAP[c[0]] ?? null;
+}
+
+// Extract an arbitrary text-sized region (pot/bet-to-call amounts are wider and
+// shorter than a card corner), binarize with Otsu and upscale for OCR.
+function extractTextRegion(src: HTMLCanvasElement, cx: number, cy: number, wPct: number, hPct: number): HTMLCanvasElement {
+  const w = Math.max(4, Math.round(src.width  * wPct / 100));
+  const h = Math.max(4, Math.round(src.height * hPct / 100));
+  const x = Math.round(cx * src.width  - w / 2);
+  const y = Math.round(cy * src.height - h / 2);
+  const SCALE = 3;
+  const out = document.createElement('canvas');
+  out.width = w * SCALE; out.height = h * SCALE;
+  const ctx = out.getContext('2d')!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(src, x, y, w, h, 0, 0, out.width, out.height);
+  const id = ctx.getImageData(0, 0, out.width, out.height);
+  const T = otsuThreshold(id.data);
+  for (let i = 0; i < id.data.length; i += 4) {
+    const v = Math.round((id.data[i] + id.data[i+1] + id.data[i+2]) / 3) < T ? 0 : 255;
+    id.data[i] = id.data[i+1] = id.data[i+2] = v;
+  }
+  ctx.putImageData(id, 0, 0);
+  return out;
+}
+
+// Parse an OCR'd money string ("1,234", "1.2K", "850") into a number.
+// Returns null when nothing digit-like was recognized — callers must treat
+// that as "couldn't read this tick" rather than "value is zero".
+function parseMoneyText(raw: string): number | null {
+  const cleaned = raw.replace(/\s/g, '').replace(',', '.');
+  const m = cleaned.match(/(\d+(?:\.\d+)?)\s*([KkMm])?/);
+  if (!m) return null;
+  let val = parseFloat(m[1]);
+  if (Number.isNaN(val)) return null;
+  if (m[2] === 'K' || m[2] === 'k') val *= 1_000;
+  if (m[2] === 'M' || m[2] === 'm') val *= 1_000_000;
+  return val;
 }
 
 // Pixel fingerprint for a card region — used to skip OCR if card hasn't changed
@@ -248,6 +317,43 @@ async function processRegions(
   return results;
 }
 
+// Read one money region (pot or bet-to-call). Same safeguards as card OCR:
+// skip re-reading unchanged pixels via fingerprint, and require a changed
+// value to repeat on two consecutive ticks before committing it — a single
+// misread digit shouldn't be able to swing the pot-odds math.
+async function processMoneyRegion(
+  worker: Worker,
+  src: HTMLCanvasElement,
+  region: CardRegion,
+  wPct: number, hPct: number,
+  fps: Map<string, { fp: string; value: number | null }>,
+  pending: Map<string, { fp: string; value: number | null }>,
+): Promise<number | null | undefined> { // undefined = no change, caller keeps current UI value
+  const key = region.label;
+  const cw = Math.max(4, Math.round(src.width  * wPct / 100));
+  const ch = Math.max(4, Math.round(src.height * hPct / 100));
+  const fp = regionFingerprint(src, region.cx, region.cy, cw, ch);
+
+  const cached = fps.get(key);
+  if (cached?.fp === fp) return undefined; // unchanged — don't touch current value
+
+  const crop = extractTextRegion(src, region.cx, region.cy, wPct, hPct);
+  const { data } = await worker.recognize(crop);
+  const value = parseMoneyText(data.text);
+
+  const pend = pending.get(key);
+  if (pend && value !== null && pend.value === value) {
+    fps.set(key, { fp, value }); pending.delete(key);
+    return value;
+  }
+  if (pend && value === null && pend.value === null) {
+    fps.set(key, { fp, value: null }); pending.delete(key);
+    return undefined;
+  }
+  pending.set(key, { fp, value });
+  return undefined; // first sighting — wait for confirmation
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 export function ScreenScan() {
   const [phase, setPhase]           = useState<Phase>('idle');
@@ -273,11 +379,30 @@ export function ScreenScan() {
   // Card height as % of captured frame height — tune to match your TON Poker window
   const [cardSizePct, setCardSizePct] = useState(9);
 
+  // ── Money OCR (pot / bet-to-call) — optional sub-calibration ──────────────
+  const [subCal, setSubCal]             = useState<SubCal>(null);
+  const [moneyStepIdx, setMoneyStepIdx] = useState(0); // 0 = pot, 1 = bet-to-call
+  const [moneyDraft, setMoneyDraft]     = useState<{ pot: CardRegion | null; bet: CardRegion | null }>({ pot: null, bet: null });
+  const [moneyCal, setMoneyCal]         = useState<MoneyCalibration | null>(null);
+  const [autoPot, setAutoPot]           = useState(false);
+  const [autoBet, setAutoBet]           = useState(false);
+
+  // ── Seat/fold detection — optional sub-calibration ────────────────────────
+  const [seatDraft, setSeatDraft]   = useState<CardRegion[]>([]);
+  const [seatCal, setSeatCal]       = useState<SeatCalibration | null>(null);
+  const [autoPlayers, setAutoPlayers] = useState(false);
+  const [activeSeats, setActiveSeats] = useState<number | null>(null);
+
   const videoRef     = useRef<HTMLVideoElement>(null);
   const canvasRef    = useRef<HTMLCanvasElement>(null);
   const diffCanvas   = useRef<HTMLCanvasElement | null>(null);
   // Two workers: [0] for hole cards, [1] for board cards
   const workersRef   = useRef<Worker[]>([]);
+  // Dedicated worker for pot/bet money OCR — different whitelist/PSM than cards
+  const moneyWorkerRef = useRef<Worker | null>(null);
+  // Fingerprint + pending-confirmation caches for money regions, keyed 'pot'|'bet'
+  const moneyFpCache      = useRef<Map<string, { fp: string; value: number | null }>>(new Map());
+  const moneyPendingCache = useRef<Map<string, { fp: string; value: number | null }>>(new Map());
   const streamRef    = useRef<MediaStream | null>(null);
   const scanLoopRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevPixels   = useRef<Uint8ClampedArray | null>(null);
@@ -295,6 +420,10 @@ export function ScreenScan() {
     const saved = loadCalibration();
     setHasSaved(saved !== null);
     if (saved?.cardSizePct) setCardSizePct(saved.cardSizePct);
+    const money = loadMoneyCalibration();
+    if (money) { setMoneyCal(money); setAutoPot(!!money.pot); setAutoBet(!!money.bet); }
+    const seats = loadSeatCalibration();
+    if (seats) { setSeatCal(seats); setAutoPlayers(true); }
   }, []);
 
   // ── Stop ─────────────────────────────────────────────────────────────────
@@ -306,10 +435,14 @@ export function ScreenScan() {
     fingerprintCache.current.clear();
     pendingCache.current.clear();
     overridesCache.current.clear();
+    moneyFpCache.current.clear();
+    moneyPendingCache.current.clear();
     lastGoodRef.current = { hole: [], board: [], holeLabels: [], boardLabels: [] };
     setPhase('idle');
     setRegions([]);
     setCalStep(0);
+    setSubCal(null);
+    setActiveSeats(null);
   }, []);
 
   // ── Start capture ─────────────────────────────────────────────────────────
@@ -353,10 +486,25 @@ export function ScreenScan() {
 
   // ── Calibration ───────────────────────────────────────────────────────────
   const handleVideoTap = useCallback(async (e: React.MouseEvent<HTMLVideoElement>) => {
-    if (phase !== 'calibrating') return;
     const rect = e.currentTarget.getBoundingClientRect();
     const cx = (e.clientX - rect.left) / rect.width;
     const cy = (e.clientY - rect.top)  / rect.height;
+
+    if (subCal === 'money') {
+      const label = moneyStepIdx === 0 ? 'Pot' : 'Bet';
+      const point = { label, cx, cy };
+      const nextDraft = moneyStepIdx === 0 ? { ...moneyDraft, pot: point } : { ...moneyDraft, bet: point };
+      setMoneyDraft(nextDraft);
+      if (moneyStepIdx === 0) { setMoneyStepIdx(1); return; }
+      finishMoneyCalibration(nextDraft);
+      return;
+    }
+    if (subCal === 'seats') {
+      setSeatDraft(d => [...d, { label: `Seat ${d.length + 1}`, cx, cy }]);
+      return;
+    }
+
+    if (phase !== 'calibrating') return;
     const newRegions = [...regions, { label: CALIBRATION_STEPS[calStep].label, cx, cy }];
     setRegions(newRegions);
     const next = calStep + 1;
@@ -367,7 +515,55 @@ export function ScreenScan() {
     } else {
       setCalStep(next);
     }
-  }, [phase, calStep, regions, cardSizePct]);
+  }, [phase, calStep, regions, cardSizePct, subCal, moneyStepIdx, moneyDraft]);
+
+  // ── Money (pot/bet) sub-calibration ───────────────────────────────────────
+  const startMoneyCalibration = useCallback(() => {
+    setMoneyDraft({ pot: null, bet: null });
+    setMoneyStepIdx(0);
+    setSubCal('money');
+  }, []);
+  const skipMoneyStep = useCallback(() => {
+    if (moneyStepIdx === 0) { setMoneyStepIdx(1); return; }
+    finishMoneyCalibration(moneyDraft);
+  }, [moneyStepIdx, moneyDraft]);
+  const finishMoneyCalibration = useCallback(async (draft: { pot: CardRegion | null; bet: CardRegion | null }) => {
+    setSubCal(null);
+    if (!draft.pot && !draft.bet) return; // both skipped — nothing to save
+    const cal: MoneyCalibration = { pot: draft.pot, bet: draft.bet, wPct: 9, hPct: 3.2, version: 1 };
+    saveMoneyCalibration(cal);
+    setMoneyCal(cal);
+    moneyFpCache.current.clear(); moneyPendingCache.current.clear();
+    setAutoPot(!!draft.pot); setAutoBet(!!draft.bet);
+    if (!moneyWorkerRef.current) {
+      const w = await createWorker('eng', 1, { logger: () => {} });
+      await w.setParameters({ tessedit_char_whitelist: '0123456789.,KkMm', tessedit_pageseg_mode: '7' as any });
+      moneyWorkerRef.current = w;
+    }
+  }, []);
+  const clearMoneyCalibration = useCallback(() => {
+    try { localStorage.removeItem(MONEY_STORAGE_KEY); } catch {}
+    setMoneyCal(null); setAutoPot(false); setAutoBet(false);
+  }, []);
+
+  // ── Seat (fold/player-count) sub-calibration ──────────────────────────────
+  const startSeatCalibration = useCallback(() => {
+    setSeatDraft([]);
+    setSubCal('seats');
+  }, []);
+  const finishSeatCalibration = useCallback(() => {
+    setSubCal(null);
+    if (seatDraft.length === 0) return;
+    const cal: SeatCalibration = { seats: seatDraft, sizePct: 6, version: 1 };
+    saveSeatCalibration(cal);
+    setSeatCal(cal);
+    setAutoPlayers(true);
+  }, [seatDraft]);
+  const cancelSeatCalibration = useCallback(() => { setSubCal(null); setSeatDraft([]); }, []);
+  const clearSeatCalibration = useCallback(() => {
+    try { localStorage.removeItem(SEAT_STORAGE_KEY); } catch {}
+    setSeatCal(null); setAutoPlayers(false); setActiveSeats(null);
+  }, []);
 
   const skipCard = useCallback(async () => {
     if (calStep < 2) return;
@@ -397,6 +593,12 @@ export function ScreenScan() {
         await Promise.all([w1.setParameters(params), w2.setParameters(params)]);
         workersRef.current = [w1, w2];
       }
+      // Money worker may already be needed if pot/bet calibration was saved from a prior session
+      if (!moneyWorkerRef.current && (moneyCal?.pot || moneyCal?.bet)) {
+        const w = await createWorker('eng', 1, { logger: () => {} });
+        await w.setParameters({ tessedit_char_whitelist: '0123456789.,KkMm', tessedit_pageseg_mode: '7' as any });
+        moneyWorkerRef.current = w;
+      }
       setRegions(finalRegions);
       if (autoStart) startScanLoop(finalRegions);
       else setPhase('scanning');
@@ -404,7 +606,7 @@ export function ScreenScan() {
       setError('Не удалось загрузить OCR движок');
       setPhase('calibrating');
     }
-  }, []);
+  }, [moneyCal]);
 
   // ── Manual correction ─────────────────────────────────────────────────────
   // Tap a detected card to fix a misread rank/suit. The override sticks until
@@ -516,11 +718,38 @@ export function ScreenScan() {
           sizing: fa.sizing, potSize, betToCall, players, position,
         });
       }
+      // ── Optional: OCR pot / bet-to-call from calibrated regions ──────────
+      const mWorker = moneyWorkerRef.current;
+      if (mWorker && moneyCal) {
+        if (moneyCal.pot && autoPot) {
+          const v = await processMoneyRegion(mWorker, canvas, moneyCal.pot, moneyCal.wPct, moneyCal.hPct, moneyFpCache.current, moneyPendingCache.current);
+          if (v !== undefined && v !== null) setPotSize(v);
+        }
+        if (moneyCal.bet && autoBet) {
+          const v = await processMoneyRegion(mWorker, canvas, moneyCal.bet, moneyCal.wPct, moneyCal.hPct, moneyFpCache.current, moneyPendingCache.current);
+          if (v !== undefined && v !== null) setBetToCall(v);
+        }
+      }
+
+      // ── Optional: opponent count via seat pixel sampling (active = card-back
+      // pixels present, folded/empty = uniform dark felt) ──────────────────
+      if (seatCal && autoPlayers) {
+        const seatCw = Math.round(canvas.width  * seatCal.sizePct / 100 * 0.72);
+        const seatCh = Math.round(canvas.height * seatCal.sizePct / 100);
+        let active = 0;
+        for (const seat of seatCal.seats) {
+          const crop = extractCardRegion(canvas, seat.cx, seat.cy, seatCw, seatCh);
+          if (!looksEmpty(crop)) active++;
+        }
+        setActiveSeats(active);
+        setPlayers(Math.min(9, Math.max(2, active + 1))); // +1 = hero
+      }
+
       setScanCount(n => n + 1);
       setLastScan(new Date().toLocaleTimeString('ru'));
     } catch {}
     finally { analyzingRef.current = false; setAnalyzing(false); }
-  }, [players, potSize, betToCall, position]);
+  }, [players, potSize, betToCall, position, moneyCal, autoPot, autoBet, seatCal, autoPlayers]);
 
   // ── Scan loop ─────────────────────────────────────────────────────────────
   const startScanLoop = useCallback((regs: CardRegion[]) => {
@@ -561,6 +790,7 @@ export function ScreenScan() {
   useEffect(() => () => {
     stopAll();
     workersRef.current.forEach(w => w.terminate());
+    moneyWorkerRef.current?.terminate();
   }, []);
 
   const captureActive = phase !== 'idle' && phase !== 'requesting';
@@ -627,7 +857,7 @@ export function ScreenScan() {
         <div className="relative flex-1 bg-black overflow-hidden min-h-[40vh]">
           <video
             ref={videoRef}
-            className={cn('w-full h-full object-contain', phase === 'calibrating' ? 'cursor-crosshair' : '')}
+            className={cn('w-full h-full object-contain', (phase === 'calibrating' || subCal) ? 'cursor-crosshair' : '')}
             playsInline muted autoPlay
             onClick={handleVideoTap}
           />
@@ -644,10 +874,46 @@ export function ScreenScan() {
           ))}
 
           {/* Scan dots */}
-          {phase === 'scanning' && regions.map((r, i) => (
+          {phase === 'scanning' && !subCal && regions.map((r, i) => (
             <div key={i}
               className={cn('absolute w-3 h-3 rounded-full border border-white/50 -translate-x-1.5 -translate-y-1.5 pointer-events-none z-10',
                 i < 2 ? 'bg-emerald-400/60' : 'bg-blue-400/60'
+              )}
+              style={{ left: `${r.cx * 100}%`, top: `${r.cy * 100}%` }}
+            />
+          ))}
+
+          {/* Money sub-calibration dots */}
+          {subCal === 'money' && [moneyDraft.pot, moneyDraft.bet].filter(Boolean).map((r, i) => (
+            <div key={i}
+              className="absolute w-16 h-6 rounded border-2 border-white bg-amber-500/60 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10 flex items-center justify-center"
+              style={{ left: `${r!.cx * 100}%`, top: `${r!.cy * 100}%` }}
+            >
+              <span className="text-[9px] font-bold text-white">{r!.label}</span>
+            </div>
+          ))}
+          {/* Money regions during normal scanning, so the user can see what's tracked */}
+          {phase === 'scanning' && !subCal && moneyCal && [moneyCal.pot, moneyCal.bet].filter(Boolean).map((r, i) => (
+            <div key={i}
+              className="absolute w-14 h-5 rounded border border-amber-400/60 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10"
+              style={{ left: `${r!.cx * 100}%`, top: `${r!.cy * 100}%` }}
+            />
+          ))}
+
+          {/* Seat sub-calibration dots */}
+          {subCal === 'seats' && seatDraft.map((r, i) => (
+            <div key={i}
+              className="absolute w-5 h-5 rounded-full border-2 border-white bg-purple-500/70 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10 flex items-center justify-center"
+              style={{ left: `${r.cx * 100}%`, top: `${r.cy * 100}%` }}
+            >
+              <span className="text-[8px] font-bold text-white">{i + 1}</span>
+            </div>
+          ))}
+          {/* Seat regions during normal scanning — green = active, gray = folded */}
+          {phase === 'scanning' && !subCal && seatCal && seatCal.seats.map((r, i) => (
+            <div key={i}
+              className={cn('absolute w-3 h-3 rounded-full border border-white/50 -translate-x-1.5 -translate-y-1.5 pointer-events-none z-10',
+                activeSeats !== null ? 'bg-purple-400/60' : 'bg-zinc-500/40'
               )}
               style={{ left: `${r.cx * 100}%`, top: `${r.cy * 100}%` }}
             />
@@ -675,6 +941,41 @@ export function ScreenScan() {
                     i < calStep ? 'bg-emerald-500' : i === calStep ? 'bg-white' : 'bg-zinc-700'
                   )} />
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Money sub-calibration UI */}
+          {subCal === 'money' && (
+            <div className="absolute bottom-0 left-0 right-0 bg-black/85 backdrop-blur-sm p-4 space-y-3 z-20">
+              <p className="text-center text-sm font-bold text-amber-400">
+                {moneyStepIdx === 0 ? 'Кликни на текст размера ПОТА' : 'Кликни на текст суммы КОЛЛА (ставки к оплате)'}
+              </p>
+              <div className="flex gap-2 justify-center">
+                <button onClick={skipMoneyStep} className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded-lg text-sm text-zinc-300">
+                  Пропустить
+                </button>
+                <button onClick={() => { setSubCal(null); }} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm text-zinc-500">
+                  Отмена
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Seat sub-calibration UI */}
+          {subCal === 'seats' && (
+            <div className="absolute bottom-0 left-0 right-0 bg-black/85 backdrop-blur-sm p-4 space-y-3 z-20">
+              <p className="text-center text-sm font-bold text-purple-400">
+                Кликни по месту каждого соперника (карты/аватар). Отмечено: {seatDraft.length}
+              </p>
+              <div className="flex gap-2 justify-center">
+                <button onClick={finishSeatCalibration} disabled={seatDraft.length === 0}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:hover:bg-emerald-600 rounded-lg text-sm text-white font-bold">
+                  Готово ({seatDraft.length})
+                </button>
+                <button onClick={cancelSeatCalibration} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm text-zinc-500">
+                  Отмена
+                </button>
               </div>
             </div>
           )}
@@ -874,17 +1175,35 @@ export function ScreenScan() {
                 <p className="text-zinc-500 text-xs uppercase tracking-widest">Параметры игры</p>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="text-zinc-600 text-xs block mb-1">Пот ($)</label>
+                    <label className="text-zinc-600 text-xs flex items-center gap-1 mb-1">
+                      Пот ($)
+                      {autoPot && <span className="text-amber-400" title="Читается автоматически (OCR)">📷</span>}
+                    </label>
                     <input type="number" min={0} placeholder="—" value={potSize ?? ''}
-                      onChange={e => setPotSize(e.target.value ? Number(e.target.value) : null)}
+                      onChange={e => { setAutoPot(false); setPotSize(e.target.value ? Number(e.target.value) : null); }}
                       className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-emerald-600" />
                   </div>
                   <div>
-                    <label className="text-zinc-600 text-xs block mb-1">Колл ($)</label>
+                    <label className="text-zinc-600 text-xs flex items-center gap-1 mb-1">
+                      Колл ($)
+                      {autoBet && <span className="text-amber-400" title="Читается автоматически (OCR)">📷</span>}
+                    </label>
                     <input type="number" min={0} placeholder="—" value={betToCall ?? ''}
-                      onChange={e => setBetToCall(e.target.value ? Number(e.target.value) : null)}
+                      onChange={e => { setAutoBet(false); setBetToCall(e.target.value ? Number(e.target.value) : null); }}
                       className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-emerald-600" />
                   </div>
+                </div>
+                <div className="flex gap-1.5">
+                  <button onClick={startMoneyCalibration}
+                    className="flex-1 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-xs text-amber-400">
+                    📷 {moneyCal ? 'Перекалибровать' : 'Настроить OCR банка/колла'}
+                  </button>
+                  {moneyCal && (
+                    <button onClick={clearMoneyCalibration}
+                      className="px-2 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-xs text-zinc-500">
+                      ✕
+                    </button>
+                  )}
                 </div>
                 <div>
                   <label className="text-zinc-600 text-xs block mb-1">Позиция</label>
@@ -894,9 +1213,24 @@ export function ScreenScan() {
                   </select>
                 </div>
                 <div className="flex items-center gap-2">
-                  <label className="text-zinc-600 text-xs shrink-0">Игроков: {players}</label>
+                  <label className="text-zinc-600 text-xs shrink-0 flex items-center gap-1">
+                    Игроков: {players}
+                    {autoPlayers && <span className="text-purple-400" title="Считается автоматически по фолдам">👥</span>}
+                  </label>
                   <input type="range" min={2} max={9} value={players}
-                    onChange={e => setPlayers(Number(e.target.value))} className="flex-1 accent-emerald-500" />
+                    onChange={e => { setAutoPlayers(false); setPlayers(Number(e.target.value)); }} className="flex-1 accent-emerald-500" />
+                </div>
+                <div className="flex gap-1.5">
+                  <button onClick={startSeatCalibration}
+                    className="flex-1 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-xs text-purple-400">
+                    👥 {seatCal ? 'Перекалибровать места' : 'Авто-подсчёт игроков (по фолду)'}
+                  </button>
+                  {seatCal && (
+                    <button onClick={clearSeatCalibration}
+                      className="px-2 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-xs text-zinc-500">
+                      ✕
+                    </button>
+                  )}
                 </div>
               </div>
 

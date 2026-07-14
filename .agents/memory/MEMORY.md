@@ -4,3 +4,4 @@
 - [Artifact re-registration after GitHub import](artifact-reimport-registration.md) — listArtifacts()/workflows empty post-import despite artifact.toml existing; fix via verifyAndReplaceArtifactToml touch, not createArtifact
 - [Poker Terminal range-vs-range Monte Carlo](poker-terminal-range-vs-range.md) — villain dealt from a range, not "any two"; flat preflop-equity threshold has a known low-board blind spot
 - [Poker Terminal GTO preflop frequencies](poker-terminal-gto-preflop-frequencies.md) — mixed-frequency percentile ramp replacing hard equity cutoffs; hand-built approximation, not real solver data
+- [Poker Terminal auto money/seats](poker-terminal-auto-money-and-seats.md) — opt-in OCR for pot/bet and pixel-based seat/fold detection, separate from mandatory card calibration; manual edit disables auto
