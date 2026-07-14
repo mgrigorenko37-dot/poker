@@ -15,10 +15,13 @@ against misreads corrupting the hand state. Added, in order of impact:
 3. **Confidence gate, not multi-tick debounce** (changed 2026-07-14) — an earlier version required
    a changed reading to repeat identically on two consecutive scan ticks before committing (up to
    ~700ms extra latency per new card). Replaced with an immediate commit gated on Tesseract's
-   per-read confidence score (`data.confidence`, rank threshold ~45, money threshold ~40): a clean
-   glyph on the 5×-upscaled/Otsu-binarized crop reads with high confidence and commits on the same
-   tick; a garbled/misaligned crop reads low and is discarded (last known value kept) instead of
-   corrupting state. Zero added latency for a good read, vs. a full extra tick for the old scheme.
+   per-read confidence score. First attempt set the rank/money confidence floors to ~45/~40 —
+   this rejected almost every real read (confirmed via browser console) and caused "no analysis
+   at all" on a live table. Corrected to floors of `1` (i.e. only rejects true garbage; `parseRank()`
+   succeeding is the real trust signal now) — do not raise these without testing against a live
+   capture, real Tesseract confidence scores on small poker-card crops run much lower than intuition
+   suggests. A clean glyph on the 5×-upscaled/Otsu-binarized crop commits on the same tick; a
+   garbled/misaligned crop still fails `parseRank()`/`parseSuit()` and is discarded either way.
 4. **Manual tap-to-correct** — tapping a detected card opens the existing `CardPicker` to fix a
    misread; the override is keyed to the region's current pixel fingerprint and auto-clears once
    that region's pixels actually change (new card dealt), so it doesn't get "stuck" wrong forever.
