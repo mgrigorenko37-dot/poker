@@ -474,6 +474,12 @@ export function ScreenScan() {
   useEffect(() => { debugModeRef.current = debugMode; }, [debugMode]);
   const [debugThumbs, setDebugThumbs] = useState<Record<string, string>>({});
 
+  // True when the browser's screen-share picker reported "Entire screen" rather
+  // than a specific window/tab — the #1 real cause of calibration silently
+  // pointing at the wrong pixels (table becomes a small, movable fraction of
+  // the captured frame instead of filling it).
+  const [sharedWholeScreen, setSharedWholeScreen] = useState(false);
+
   // ── Money OCR (pot / bet-to-call) — optional sub-calibration ──────────────
   const [subCal, setSubCal]             = useState<SubCal>(null);
   const [moneyStepIdx, setMoneyStepIdx] = useState(0); // 0 = pot, 1 = bet-to-call
@@ -529,6 +535,7 @@ export function ScreenScan() {
     overridesCache.current.clear();
     moneyFpCache.current.clear();
     lastGoodRef.current = { hole: [], board: [], holeLabels: [], boardLabels: [] };
+    setSharedWholeScreen(false);
     setPhase('idle');
     setRegions([]);
     setCalStep(0);
@@ -542,15 +549,25 @@ export function ScreenScan() {
     setPhase('requesting');
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 5, max: 15 } },
+        // `displaySurface: 'window'` is only a hint (Chrome uses it to default
+        // the picker to the "Window" tab) — it does not block the user from
+        // still choosing "Entire screen". Sharing the whole screen is the
+        // #1 real-world cause of "sees nothing" reports: the table then only
+        // fills a small, off-center fraction of the frame, so calibrated %
+        // regions land on background/other windows instead of cards, and any
+        // window move/resize silently invalidates the calibration.
+        video: { frameRate: { ideal: 5, max: 15 }, displaySurface: 'window' } as MediaTrackConstraints,
         audio: false,
       });
       streamRef.current = stream;
+      const track = stream.getVideoTracks()[0];
+      const settings = track.getSettings() as MediaTrackSettings & { displaySurface?: string };
+      setSharedWholeScreen(settings.displaySurface === 'monitor');
       const video = videoRef.current!;
       video.srcObject = stream;
       video.muted = true;
       video.playsInline = true;
-      stream.getVideoTracks()[0].addEventListener('ended', stopAll);
+      track.addEventListener('ended', stopAll);
       video.play().catch(() => {});
 
       if (skipCalibration) {
@@ -953,8 +970,8 @@ export function ScreenScan() {
           </div>
           <div className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-left space-y-1.5">
             {[
-              'Открой TON Poker в Telegram Desktop',
-              'Нажми «Запустить» — выбери окно Telegram',
+              'Разверни окно/вкладку с игрой на весь экран',
+              'Нажми «Начать захват» — выбери именно ЭТО окно/вкладку, а не «Весь экран»',
               'Кликни по центру каждой карты один раз (калибровка сохранится)',
               'Дальше всё автоматически: OCR → GTO → результат на телефоне',
             ].map((s, i) => (
@@ -1005,6 +1022,22 @@ export function ScreenScan() {
             onClick={handleVideoTap}
           />
           <canvas ref={canvasRef} className="hidden" />
+
+          {/* Whole-screen warning — the #1 real cause of "sees nothing": table
+              is then a small, movable fraction of the frame instead of filling
+              it, so calibrated regions land on background/other windows. */}
+          {sharedWholeScreen && (
+            <div className="absolute top-2 left-2 right-2 z-20 bg-amber-900/90 border border-amber-600 rounded-lg px-3 py-2 flex items-center justify-between gap-2">
+              <p className="text-amber-200 text-xs leading-snug">
+                ⚠️ Ты поделился «Весь экран» — стол занимает маленькую часть кадра, и калибровка собьётся
+                при любом сдвиге окна. Лучше поделиться именно окном/вкладкой с игрой, развернув её.
+              </p>
+              <button onClick={() => { stopAll(); startCapture(false); }}
+                className="shrink-0 py-1 px-2 bg-amber-700 hover:bg-amber-600 rounded text-[10px] text-white font-bold">
+                Выбрать окно игры
+              </button>
+            </div>
+          )}
 
           {/* Calibration dots */}
           {phase === 'calibrating' && regions.map((r, i) => (
