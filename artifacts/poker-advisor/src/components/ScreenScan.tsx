@@ -463,6 +463,17 @@ export function ScreenScan() {
   // Card height as % of captured frame height — tune to match your TON Poker window
   const [cardSizePct, setCardSizePct] = useState(9);
 
+  // ── Debug view: shows the exact pixels each region is reading ─────────────
+  // The single most useful diagnostic when OCR "sees nothing" — lets the user
+  // (and us, from a screenshot) tell instantly whether a region is even
+  // pointed at a card, vs. pointed at empty table because the calibration no
+  // longer matches what's actually being captured (e.g. window was resized,
+  // or the shared screen area shrank after docking two windows side by side).
+  const [debugMode, setDebugMode] = useState(false);
+  const debugModeRef = useRef(false);
+  useEffect(() => { debugModeRef.current = debugMode; }, [debugMode]);
+  const [debugThumbs, setDebugThumbs] = useState<Record<string, string>>({});
+
   // ── Money OCR (pot / bet-to-call) — optional sub-calibration ──────────────
   const [subCal, setSubCal]             = useState<SubCal>(null);
   const [moneyStepIdx, setMoneyStepIdx] = useState(0); // 0 = pot, 1 = bet-to-call
@@ -772,6 +783,25 @@ export function ScreenScan() {
         processRegions(w1, canvas, holeRegs,  cardW, cardH, fingerprintCache.current, overridesCache.current),
         processRegions(w2, canvas, boardRegs, cardW, cardH, fingerprintCache.current, overridesCache.current),
       ]);
+
+      // ── Debug thumbnails: exactly what pixels each region is reading right
+      // now — the fastest way to tell "OCR is broken" apart from "calibration
+      // no longer matches what's being captured". Only computed when the
+      // debug panel is open, so it costs nothing during normal play.
+      if (debugModeRef.current) {
+        const toThumb = (el: HTMLCanvasElement, maxW = 64): string => {
+          const scale = maxW / el.width;
+          const t = document.createElement('canvas');
+          t.width = maxW; t.height = Math.max(1, Math.round(el.height * scale));
+          t.getContext('2d')!.drawImage(el, 0, 0, t.width, t.height);
+          return t.toDataURL('image/png');
+        };
+        const thumbs: Record<string, string> = {};
+        for (const r of regs) thumbs[r.label] = toThumb(extractCardRegion(canvas, r.cx, r.cy, cardW, cardH));
+        if (moneyCal?.pot) thumbs['Пот (регион)'] = toThumb(extractTextRegion(canvas, moneyCal.pot.cx, moneyCal.pot.cy, moneyCal.wPct, moneyCal.hPct), 100);
+        if (moneyCal?.bet) thumbs['Колл (регион)'] = toThumb(extractTextRegion(canvas, moneyCal.bet.cx, moneyCal.bet.cy, moneyCal.wPct, moneyCal.hPct), 100);
+        setDebugThumbs(thumbs);
+      }
 
       const compact = (results: (Card | null)[], srcRegs: CardRegion[]) => {
         const cards: Card[] = [], labels: string[] = [];
@@ -1371,6 +1401,39 @@ export function ScreenScan() {
                 <p className="text-zinc-700 text-xs">
                   Если карты определяются неверно — перемести ползунок. Типичные значения: 7–12%.
                 </p>
+              </div>
+
+              {/* Debug view — see exactly what pixels OCR is reading right now.
+                  Turn this on FIRST if recognition seems broken: it shows whether
+                  each region is actually pointed at a card, or at empty table
+                  because the capture no longer matches the saved calibration. */}
+              <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 space-y-2">
+                <button onClick={() => setDebugMode(v => !v)}
+                  className="w-full flex items-center justify-between text-xs text-zinc-400">
+                  <span>👁 Что видит OCR (debug)</span>
+                  <span className={cn('px-2 py-0.5 rounded text-[10px] font-bold', debugMode ? 'bg-emerald-600 text-white' : 'bg-zinc-800 text-zinc-500')}>
+                    {debugMode ? 'ВКЛ' : 'ВЫКЛ'}
+                  </span>
+                </button>
+                {debugMode && (
+                  <>
+                    <p className="text-zinc-700 text-[10px]">
+                      Если тут не карты (а стол/фон) — калибровка не совпадает с тем, что реально захватывается.
+                      Перекалибруй или измени «Размер карты» так, чтобы рамки точно легли на карты.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(debugThumbs).map(([label, src]) => (
+                        <div key={label} className="flex flex-col items-center gap-0.5">
+                          <img src={src} alt={label} className="border border-zinc-700 rounded bg-white" style={{ imageRendering: 'pixelated' }} />
+                          <span className="text-zinc-600 text-[9px]">{label}</span>
+                        </div>
+                      ))}
+                      {Object.keys(debugThumbs).length === 0 && (
+                        <p className="text-zinc-700 text-[10px]">Жди следующего скана...</p>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
 
               {lastScan && (
