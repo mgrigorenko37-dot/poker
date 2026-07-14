@@ -339,12 +339,14 @@ const suitSym  = (s: string) => ({ h:'♥',d:'♦',c:'♣',s:'♠' }[s] ?? s);
 const suitCls  = (s: string) => s === 'h' || s === 'd' ? 'text-red-400' : 'text-zinc-200';
 const rankLabel = (r: number) => ({ 14:'A',13:'K',12:'Q',11:'J',10:'T' }[r] ?? String(r));
 
-// Minimum Tesseract confidence (0-100) to trust a rank reading. The rank crop is
-// already 5×-upscaled + Otsu-binarized, so a real glyph reads with high confidence;
-// a misaligned/garbled crop reads low. This replaces the old "wait two ticks" debounce
-// as the accuracy gate — it costs zero extra latency (rejected on the SAME tick) instead
-// of costing a full extra scan interval, which is critical when the user has ~5s to act.
-const RANK_CONFIDENCE_MIN = 45;
+// Minimum Tesseract confidence (0-100) to trust a rank reading. Tesseract.js's
+// PSM_SINGLE_CHAR confidence score runs much lower in practice than a normal
+// word/line read (no dictionary/context to boost it) — a threshold tuned by
+// guesswork (45) rejected essentially every real reading and silently killed
+// all analysis. Kept low and only as a floor against a total garbage read
+// (confidence ~0), not as the primary accuracy gate — parseRank() succeeding
+// on the binarized glyph is the real signal.
+const RANK_CONFIDENCE_MIN = 1;
 
 // Process a list of regions with one worker (sequential within worker, safe).
 // Safeguards against misreads, in latency order (cheapest/fastest first):
@@ -403,8 +405,11 @@ async function processRegions(
 }
 
 // Minimum confidence for a money (pot/bet) OCR reading — same rationale as
-// RANK_CONFIDENCE_MIN: gate on quality, not on waiting an extra tick.
-const MONEY_CONFIDENCE_MIN = 40;
+// RANK_CONFIDENCE_MIN above: kept as a floor against total garbage, not the
+// primary gate (a digit-whitelisted line read is more reliable than a single
+// char, so this can stay a bit higher, but still nowhere near 40 — that
+// value silently blocked pot/bet updates too).
+const MONEY_CONFIDENCE_MIN = 1;
 
 // Read one money region (pot or bet-to-call). Same safeguard shape as card OCR:
 // skip re-reading unchanged pixels via fingerprint, and discard a low-confidence
