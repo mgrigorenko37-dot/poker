@@ -206,6 +206,47 @@ function parseMoneyText(raw: string): number | null {
   return best;
 }
 
+// Generic oval-table seat template: (t, dx) where t = 0..1 progress from the
+// top of the table (near the board) down to hero's level, and dx = horizontal
+// offset from center as a fraction of the table's half-width. This mirrors
+// the near-universal "hero at bottom-center, opponents arced around an oval
+// table" layout shared by virtually every online/Telegram poker client.
+const SEAT_TEMPLATE: Array<{ t: number; dx: number }> = [
+  { t: 0.85, dx: -0.42 },
+  { t: 0.55, dx: -0.58 },
+  { t: 0.22, dx: -0.48 },
+  { t: 0.02, dx: -0.18 },
+  { t: 0.02, dx:  0.18 },
+  { t: 0.22, dx:  0.48 },
+  { t: 0.55, dx:  0.58 },
+  { t: 0.85, dx:  0.42 },
+];
+
+// Derive opponent seat slots automatically from the card calibration geometry
+// — no clicking. Seat positions can't be read off the board/hole cards the
+// way pot/bet can, so this maps a generic oval-table template onto the
+// vertical/horizontal span between hero's cards and the board. It will
+// sometimes include slots that aren't real seats on smaller tables (they'll
+// just always read as empty felt, which is harmless), and won't perfectly
+// match every table skin — the manual "уточнить вручную" flow remains as an
+// override for tables where this default doesn't line up.
+function computeAutoSeatSlots(regions: CardRegion[]): SeatCalibration {
+  const holePts  = regions.filter(r => r.label.startsWith('Hole'));
+  const boardPts = regions.filter(r => r.label.startsWith('Board'));
+  const avg = (pts: CardRegion[]) => pts.length
+    ? { cx: pts.reduce((s, p) => s + p.cx, 0) / pts.length, cy: pts.reduce((s, p) => s + p.cy, 0) / pts.length }
+    : null;
+  const hole  = avg(holePts)  ?? { cx: 0.5, cy: 0.85 };
+  const board = avg(boardPts) ?? { cx: hole.cx, cy: Math.max(0.1, hole.cy - 0.25) };
+  const topY = Math.max(0.03, board.cy - (hole.cy - board.cy) * 0.35); // a bit above the board
+  const seats: CardRegion[] = SEAT_TEMPLATE.map((s, i) => ({
+    label: `Seat ${i + 1}`,
+    cx: Math.min(0.97, Math.max(0.03, hole.cx + s.dx * 0.46)),
+    cy: topY + s.t * (hole.cy - topY),
+  }));
+  return { seats, sizePct: 6, version: 1 };
+}
+
 // Derive pot/bet-to-call search bands automatically from the card calibration
 // the user already has to do — no extra clicks. Poker tables overwhelmingly
 // follow the same layout: community cards centered mid-table, hero's hole
@@ -505,8 +546,9 @@ export function ScreenScan() {
         if (saved) {
           setRegions(saved.regions);
           if (saved.cardSizePct) setCardSizePct(saved.cardSizePct);
-          // Backfill auto pot/bet bands for calibrations saved before this existed.
+          // Backfill auto pot/bet bands and seat slots for calibrations saved before these existed.
           if (!loadMoneyCalibration()) autoSetupMoney(saved.regions);
+          if (!loadSeatCalibration()) autoSetupSeats(saved.regions);
           await loadOcr(saved.regions, true);
           return;
         }
@@ -552,6 +594,7 @@ export function ScreenScan() {
       saveCalibration(newRegions, cardSizePct);
       setHasSaved(true);
       autoSetupMoney(newRegions);
+      autoSetupSeats(newRegions);
       await loadOcr(newRegions, true);
     } else {
       setCalStep(next);
@@ -566,6 +609,15 @@ export function ScreenScan() {
     setMoneyCal(auto);
     setAutoPot(true); setAutoBet(true);
     moneyFpCache.current.clear(); moneyPendingCache.current.clear();
+  }, []);
+
+  // Opponent seat/fold detection turns on by itself the same way — no clicks.
+  // See computeAutoSeatSlots for the generic oval-table layout assumptions.
+  const autoSetupSeats = useCallback((finalRegions: CardRegion[]) => {
+    const auto = computeAutoSeatSlots(finalRegions);
+    saveSeatCalibration(auto);
+    setSeatCal(auto);
+    setAutoPlayers(true);
   }, []);
 
   // ── Money (pot/bet) sub-calibration ───────────────────────────────────────
@@ -623,6 +675,7 @@ export function ScreenScan() {
       saveCalibration(regions, cardSizePct);
       setHasSaved(true);
       autoSetupMoney(regions);
+      autoSetupSeats(regions);
       await loadOcr(regions, true);
     } else {
       setCalStep(next);
@@ -1275,18 +1328,20 @@ export function ScreenScan() {
                   <input type="range" min={2} max={9} value={players}
                     onChange={e => { setAutoPlayers(false); setPlayers(Number(e.target.value)); }} className="flex-1 accent-emerald-500" />
                 </div>
-                <div className="flex gap-1.5">
-                  <button onClick={startSeatCalibration}
-                    className="flex-1 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-xs text-purple-400">
-                    👥 {seatCal ? 'Перекалибровать места' : 'Авто-подсчёт игроков (по фолду)'}
-                  </button>
-                  {seatCal && (
-                    <button onClick={clearSeatCalibration}
-                      className="px-2 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-xs text-zinc-500">
-                      ✕
+                {seatCal ? (
+                  <div className="flex items-center justify-between gap-1.5">
+                    <p className="text-zinc-700 text-[10px]">👥 Число игроков считается само — ничего настраивать не нужно</p>
+                    <button onClick={startSeatCalibration}
+                      className="shrink-0 py-1 px-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-[10px] text-zinc-500">
+                      Уточнить вручную
                     </button>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <button onClick={startSeatCalibration}
+                    className="w-full py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-xs text-purple-400">
+                    👥 Настроить места соперников вручную
+                  </button>
+                )}
               </div>
 
               {/* Card size tuner — adjust if OCR reads wrong cards */}
