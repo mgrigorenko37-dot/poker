@@ -1,0 +1,164 @@
+Microsoft Windows [Version 10.0.26200.8875]
+(c) Корпорация Майкрософт (Microsoft Corporation). Все права защищены.
+
+C:\Users\Макс\OneDrive\Desktop\python>pip install -r requirements.txt
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting mss>=9.0.1 (from -r requirements.txt (line 1))
+  Downloading mss-10.2.0-py3-none-any.whl.metadata (7.2 kB)
+Collecting opencv-python>=4.9.0 (from -r requirements.txt (line 2))
+  Downloading opencv_python-5.0.0.93-cp37-abi3-win_amd64.whl.metadata (20 kB)
+Collecting easyocr>=1.7.1 (from -r requirements.txt (line 3))
+  Downloading easyocr-1.7.2-py3-none-any.whl.metadata (10 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting numpy>=1.26.0 (from -r requirements.txt (line 4))
+  Downloading numpy-2.5.1-cp314-cp314-win_amd64.whl.metadata (6.6 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting requests>=2.31.0 (from -r requirements.txt (line 5))
+  Using cached requests-2.34.2-py3-none-any.whl.metadata (4.8 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting pywin32>=306 (from -r requirements.txt (line 6))
+  Downloading pywin32-312-cp314-cp314-win_amd64.whl.metadata (11 kB)
+Collecting torch (from easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading torch-2.13.0-cp314-cp314-win_amd64.whl.metadata (39 kB)
+Collecting torchvision>=0.5 (from easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading torchvision-0.28.0-cp314-cp314-win_amd64.whl.metadata (5.6 kB)
+Collecting opencv-python-headless (from easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading opencv_python_headless-5.0.0.93-cp37-abi3-win_amd64.whl.metadata (20 kB)
+Collecting scipy (from easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading scipy-1.18.0-cp314-cp314-win_amd64.whl.metadata (61 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting Pillow (from easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading pillow-12.3.0-cp314-cp314-win_amd64.whl.metadata (9.3 kB)
+Collecting scikit-image (from easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading scikit_image-0.26.0-cp314-cp314-win_amd64.whl.metadata (15 kB)
+Collecting python-bidi (from easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading python_bidi-0.6.11-cp314-cp314-win_amd64.whl.metadata (5.4 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting PyYAML (from easyocr>=1.7.1->-r requirements.txt (line 3))
+  Using cached pyyaml-6.0.3-cp314-cp314-win_amd64.whl.metadata (2.4 kB)
+Collecting Shapely (from easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading shapely-2.1.2-cp314-cp314-win_amd64.whl.metadata (7.1 kB)
+Collecting pyclipper (from easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading pyclipper-1.4.0-cp314-cp314-win_amd64.whl.metadata (8.8 kB)
+Collecting ninja (from easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading ninja-1.13.0-py3-none-win_amd64.whl.metadata (5.1 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting charset_normalizer<4,>=2 (from requests>=2.31.0->-r requirements.txt (line 5))
+  Downloading charset_normalizer-3.4.9-cp314-cp314-win_amd64.whl.metadata (42 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting idna<4,>=2.5 (from requests>=2.31.0->-r requirements.txt (line 5))
+  Downloading idna-3.18-py3-none-any.whl.metadata (6.1 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting urllib3<3,>=1.26 (from requests>=2.31.0->-r requirements.txt (line 5))
+  Using cached urllib3-2.7.0-py3-none-any.whl.metadata (6.9 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting certifi>=2023.5.7 (from requests>=2.31.0->-r requirements.txt (line 5))
+  Downloading certifi-2026.6.17-py3-none-any.whl.metadata (2.5 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting filelock (from torch->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading filelock-3.31.0-py3-none-any.whl.metadata (2.0 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting typing-extensions>=4.10.0 (from torch->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting setuptools>=77.0.3 (from torch->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading setuptools-83.0.0-py3-none-any.whl.metadata (6.6 kB)
+Collecting sympy>=1.13.3 (from torch->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading sympy-1.14.0-py3-none-any.whl.metadata (12 kB)
+Collecting networkx>=2.5.1 (from torch->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading networkx-3.6.1-py3-none-any.whl.metadata (6.8 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting jinja2 (from torch->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Using cached jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting fsspec>=0.8.5 (from torch->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading fsspec-2026.6.0-py3-none-any.whl.metadata (10 kB)
+Collecting mpmath<1.4,>=1.1.0 (from sympy>=1.13.3->torch->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading mpmath-1.3.0-py3-none-any.whl.metadata (8.6 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting MarkupSafe>=2.0 (from jinja2->torch->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Using cached markupsafe-3.0.3-cp314-cp314-win_amd64.whl.metadata (2.8 kB)
+Collecting imageio!=2.35.0,>=2.33 (from scikit-image->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading imageio-2.37.3-py3-none-any.whl.metadata (9.7 kB)
+Collecting tifffile>=2022.8.12 (from scikit-image->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading tifffile-2026.7.14-py3-none-any.whl.metadata (33 kB)
+WARNING: Cache entry deserialization failed, entry ignored
+Collecting packaging>=21 (from scikit-image->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Using cached packaging-26.2-py3-none-any.whl.metadata (3.5 kB)
+Collecting lazy-loader>=0.4 (from scikit-image->easyocr>=1.7.1->-r requirements.txt (line 3))
+  Downloading lazy_loader-0.5-py3-none-any.whl.metadata (5.9 kB)
+Downloading mss-10.2.0-py3-none-any.whl (67 kB)
+Downloading opencv_python-5.0.0.93-cp37-abi3-win_amd64.whl (44.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 44.0/44.0 MB 25.8 MB/s  0:00:01
+Downloading easyocr-1.7.2-py3-none-any.whl (2.9 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.9/2.9 MB 32.1 MB/s  0:00:00
+Downloading numpy-2.5.1-cp314-cp314-win_amd64.whl (12.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 12.6/12.6 MB 28.2 MB/s  0:00:00
+Using cached requests-2.34.2-py3-none-any.whl (73 kB)
+Downloading charset_normalizer-3.4.9-cp314-cp314-win_amd64.whl (162 kB)
+Downloading idna-3.18-py3-none-any.whl (65 kB)
+Using cached urllib3-2.7.0-py3-none-any.whl (131 kB)
+Downloading pywin32-312-cp314-cp314-win_amd64.whl (7.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.0/7.0 MB 22.0 MB/s  0:00:00
+Downloading certifi-2026.6.17-py3-none-any.whl (133 kB)
+Downloading torchvision-0.28.0-cp314-cp314-win_amd64.whl (4.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.2/4.2 MB 16.9 MB/s  0:00:00
+Downloading torch-2.13.0-cp314-cp314-win_amd64.whl (122.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 122.1/122.1 MB 35.4 MB/s  0:00:03
+Downloading fsspec-2026.6.0-py3-none-any.whl (203 kB)
+Downloading networkx-3.6.1-py3-none-any.whl (2.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 28.3 MB/s  0:00:00
+Downloading pillow-12.3.0-cp314-cp314-win_amd64.whl (7.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.2/7.2 MB 26.1 MB/s  0:00:00
+Downloading setuptools-83.0.0-py3-none-any.whl (1.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.0/1.0 MB 26.3 MB/s  0:00:00
+Downloading sympy-1.14.0-py3-none-any.whl (6.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.3/6.3 MB 29.5 MB/s  0:00:00
+Downloading mpmath-1.3.0-py3-none-any.whl (536 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 536.2/536.2 kB 12.5 MB/s  0:00:00
+Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+Downloading filelock-3.31.0-py3-none-any.whl (96 kB)
+Using cached jinja2-3.1.6-py3-none-any.whl (134 kB)
+Using cached markupsafe-3.0.3-cp314-cp314-win_amd64.whl (15 kB)
+Downloading ninja-1.13.0-py3-none-win_amd64.whl (309 kB)
+Downloading opencv_python_headless-5.0.0.93-cp37-abi3-win_amd64.whl (43.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 43.8/43.8 MB 32.0 MB/s  0:00:01
+Downloading pyclipper-1.4.0-cp314-cp314-win_amd64.whl (106 kB)
+Downloading python_bidi-0.6.11-cp314-cp314-win_amd64.whl (161 kB)
+Using cached pyyaml-6.0.3-cp314-cp314-win_amd64.whl (156 kB)
+Downloading scikit_image-0.26.0-cp314-cp314-win_amd64.whl (12.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 12.0/12.0 MB 35.4 MB/s  0:00:00
+Downloading imageio-2.37.3-py3-none-any.whl (317 kB)
+Downloading lazy_loader-0.5-py3-none-any.whl (8.0 kB)
+Using cached packaging-26.2-py3-none-any.whl (100 kB)
+Downloading scipy-1.18.0-cp314-cp314-win_amd64.whl (37.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 37.3/37.3 MB 34.6 MB/s  0:00:01
+Downloading tifffile-2026.7.14-py3-none-any.whl (270 kB)
+Downloading shapely-2.1.2-cp314-cp314-win_amd64.whl (1.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.8/1.8 MB 22.2 MB/s  0:00:00
+Installing collected packages: mpmath, urllib3, typing-extensions, sympy, setuptools, PyYAML, pywin32, python-bidi, pyclipper, Pillow, packaging, numpy, ninja, networkx, mss, MarkupSafe, idna, fsspec, filelock, charset_normalizer, certifi, tifffile, Shapely, scipy, requests, opencv-python-headless, opencv-python, lazy-loader, jinja2, imageio, torch, scikit-image, torchvision, easyocr
+   ━━━╸━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  3/34 [sympy]  WARNING: The script isympy.exe is installed in 'C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+   ━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  6/34 [pywin32]  WARNING: The scripts pywin32_postinstall.exe and pywin32_testall.exe are installed in 'C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+   ━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  7/34 [python-bidi]  WARNING: The script pybidi.exe is installed in 'C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+   ━━━━━━━━━━━━╸━━━━━━━━━━━━━━━━━━━━━━━━━━━ 11/34 [numpy]  WARNING: The scripts f2py.exe and numpy-config.exe are installed in 'C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+   ━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━ 13/34 [networkx]  WARNING: The script mss.exe is installed in 'C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+   ━━━━━━━━━━━━━━━━━━╸━━━━━━━━━━━━━━━━━━━━━ 16/34 [idna]  WARNING: The script idna.exe is installed in 'C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+   ━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━━━ 19/34 [charset_normalizer]  WARNING: The script normalizer.exe is installed in 'C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+   ━━━━━━━━━━━━━━━━━━━━━━━━╸━━━━━━━━━━━━━━━ 21/34 [tifffile]  WARNING: The scripts lsm2bin.exe, tiff2fsspec.exe, tiffcomment.exe and tifffile.exe are installed in 'C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━ 29/34 [imageio]  WARNING: The scripts imageio_download_bin.exe and imageio_remove_bin.exe are installed in 'C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━ 30/34 [torch]  WARNING: The scripts torchfrtrace.exe and torchrun.exe are installed in 'C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸━ 33/34 [easyocr]  WARNING: The script easyocr.exe is installed in 'C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+Successfully installed MarkupSafe-3.0.3 Pillow-12.3.0 PyYAML-6.0.3 Shapely-2.1.2 certifi-2026.6.17 charset_normalizer-3.4.9 easyocr-1.7.2 filelock-3.31.0 fsspec-2026.6.0 idna-3.18 imageio-2.37.3 jinja2-3.1.6 lazy-loader-0.5 mpmath-1.3.0 mss-10.2.0 networkx-3.6.1 ninja-1.13.0 numpy-2.5.1 opencv-python-5.0.0.93 opencv-python-headless-5.0.0.93 packaging-26.2 pyclipper-1.4.0 python-bidi-0.6.11 pywin32-312 requests-2.34.2 scikit-image-0.26.0 scipy-1.18.0 setuptools-83.0.0 sympy-1.14.0 tifffile-2026.7.14 torch-2.13.0 torchvision-0.28.0 typing-extensions-4.16.0 urllib3-2.7.0
+
+C:\Users\Макс\OneDrive\Desktop\python>
