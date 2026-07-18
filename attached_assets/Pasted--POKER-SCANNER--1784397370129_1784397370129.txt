@@ -1,0 +1,34 @@
+
+────────────────────────────────────────────────────
+  ♠  POKER SCANNER — авто-режим
+────────────────────────────────────────────────────
+
+🔍 Ищу окно покер-рума... найдено: Ton Poker ✅
+🎨 Детект стола: настроен под Ton Poker
+📐 Стол: ручная область (16,86) 1903×810 px  [для смены запусти пункт 8 в меню]
+🌐 Проверяю сервер... доступен ✅
+⚠️  Telegram: TELEGRAM_BOT_TOKEN не задан в Replit Secrets
+🃏 Шаблоны: 0/52 — запускаю сборку в фоне (просто играй)
+
+🚀 Запускаю сканер...
+
+📱 Telegram: проверка пропущена (уже выполнена auto.py)
+📋 Регионы: config.json загружен (запасной вариант если авто не сработает)
+🔍 Авто-детект стола: включён (table_detector)
+🃏 Шаблоны не найдены → только EasyOCR
+   Для точности 99.9% запусти: python collect_templates.py
+🎯 Позиция: фиксировано BTN (запусти calibrate.py Фазу 4)
+Инициализация EasyOCR (fallback, первый запуск ~10 сек)...
+
+Сканирование запущено (5 FPS). Ctrl+C для остановки.
+
+⏳ Открой покер-рум — скрипт найдёт стол автоматически.
+
+C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\torch\ao\nn\quantized\dynamic\modules\rnn.py:162: UserWarning: torch.quantize_per_tensor, torch.quantize_per_channel and other quantized tensor creation functions that produce tensors with dtype torch.quint8, torch.qint8, and torch.qint32 are deprecated and will be removed in a future PyTorch release. Please see https://github.com/pytorch/pytorch/issues/184982 for more information. (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\aten\src\ATen\quantized\Quantizer.cpp:116.)
+  w_ih = torch.quantize_per_tensor(
+C:\Users\Макс\OneDrive\Desktop\python\auto.py:384: DeprecationWarning: mss.mss is deprecated and will be removed in a future release; use mss.MSS instead
+  with mss.mss() as sct:
+EasyOCR готов.
+
+C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\torch\utils\data\dataloader.py:759: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.
+  super().__init__(loader)

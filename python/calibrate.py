@@ -58,7 +58,7 @@ def save_config(cfg: dict) -> None:
 
 # ── Захват экрана ─────────────────────────────────────────────────────────────
 def capture_screen() -> np.ndarray:
-    with mss.mss() as sct:
+    with mss.MSS() as sct:
         mon = sct.monitors[1]
         raw = sct.grab(mon)
         img = np.frombuffer(raw.rgb, dtype=np.uint8).reshape(raw.height, raw.width, 3)

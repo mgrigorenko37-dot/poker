@@ -40,7 +40,7 @@ OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "debug_output.png")
 
 
 def capture() -> np.ndarray:
-    with mss.mss() as sct:
+    with mss.MSS() as sct:
         monitor = sct.monitors[1]
         raw = sct.grab(monitor)
         return np.frombuffer(raw.raw, dtype=np.uint8).reshape(

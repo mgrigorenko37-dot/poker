@@ -414,7 +414,7 @@ def _template_collector(cfg: dict) -> None:
         reader     = easyocr.Reader(["en"], gpu=False, verbose=False)
         last_count = _count_templates()
 
-        with mss.mss() as sct:
+        with mss.MSS() as sct:
             while True:
                 missing = ALL_CARDS - loaded_cards()
                 if not missing:
