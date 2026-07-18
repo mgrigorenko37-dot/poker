@@ -5,20 +5,23 @@
 
   "position": "BTN",
   "players": 6,
+
+  "_card_height_comment": "Высота карты в % от высоты экрана. Ton Poker mobile = 9. Настрой если карты не читаются.",
   "card_height_pct": 9,
 
+  "_preset_comment": "Координаты для Ton Poker (мобильная версия, портрет, 6-max). Замеряны по скриншоту 468x847.",
   "regions": [
-    { "label": "Hole1",  "cx": 0.44, "cy": 0.82 },
-    { "label": "Hole2",  "cx": 0.56, "cy": 0.82 },
-    { "label": "Board1", "cx": 0.30, "cy": 0.48 },
-    { "label": "Board2", "cx": 0.40, "cy": 0.48 },
-    { "label": "Board3", "cx": 0.50, "cy": 0.48 },
-    { "label": "Board4", "cx": 0.60, "cy": 0.48 },
-    { "label": "Board5", "cx": 0.70, "cy": 0.48 }
+    { "label": "Hole1",  "cx": 0.43, "cy": 0.79 },
+    { "label": "Hole2",  "cx": 0.57, "cy": 0.79 },
+    { "label": "Board1", "cx": 0.32, "cy": 0.45 },
+    { "label": "Board2", "cx": 0.41, "cy": 0.45 },
+    { "label": "Board3", "cx": 0.51, "cy": 0.45 },
+    { "label": "Board4", "cx": 0.60, "cy": 0.45 },
+    { "label": "Board5", "cx": 0.70, "cy": 0.45 }
   ],
 
+  "_money_comment": "Банк — цифра над бордом. Bet — зона ставок (настрой по калибровке).",
   "money_regions": {
-    "pot": { "x1": 0.40, "y1": 0.38, "x2": 0.60, "y2": 0.44 },
-    "bet": { "x1": 0.40, "y1": 0.88, "x2": 0.60, "y2": 0.94 }
+    "pot": { "x1": 0.42, "y1": 0.34, "x2": 0.62, "y2": 0.40 }
   }
 }

@@ -31,6 +31,8 @@ import cv2
 import numpy as np
 import requests
 
+from card_utils import detect_suit, refine_red_suit, extract_card_region, looks_empty
+
 # ── EasyOCR — fallback когда нет шаблона ────────────────────────────────────
 _ocr_reader = None
 _ocr_lock   = threading.Lock()
@@ -133,40 +135,12 @@ def capture_screen() -> Optional[np.ndarray]:
         print(f"Ошибка захвата: {e}")
         return None
 
-# ── Вырезка регионов ─────────────────────────────────────────────────────────
-def extract_card_region(frame, cx, cy, cw, ch) -> np.ndarray:
-    fh, fw = frame.shape[:2]
-    x = int(cx * fw - cw / 2); y = int(cy * fh - ch / 2)
-    return frame[max(0,y):min(fh,y+ch), max(0,x):min(fw,x+cw)]
-
+# ── Вырезка денежного региона ────────────────────────────────────────────────
 def extract_money_region(frame, region: dict) -> np.ndarray:
     fh, fw = frame.shape[:2]
     x1 = int(region["x1"] * fw); y1 = int(region["y1"] * fh)
     x2 = int(region["x2"] * fw); y2 = int(region["y2"] * fh)
     return frame[max(0,y1):min(fh,y2), max(0,x1):min(fw,x2)]
-
-# ── Масть ─────────────────────────────────────────────────────────────────────
-def detect_suit(crop: np.ndarray) -> Optional[str]:
-    if crop.size == 0:
-        return None
-    hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
-    h_c = hsv[:,:,0].astype(float)
-    s_c = hsv[:,:,1].astype(float)
-    v_c = hsv[:,:,2].astype(float)
-    mask = (s_c > 40) & (v_c > 50) & (v_c < 240)
-    sat  = h_c[mask]
-    if len(sat) < 5:
-        return None
-    med = float(np.median(sat))
-    if med < 15 or med > 160: return "h"
-    if med < 50:  return "d"
-    if med < 140: return "c"
-    return "s"
-
-def refine_red_suit(crop: np.ndarray) -> str:
-    hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
-    reds = hsv[:,:,0].astype(float)[hsv[:,:,1].astype(float) > 40]
-    return "d" if (len(reds) > 0 and 5 < float(np.median(reds)) < 20) else "h"
 
 # ── OCR ранга (fallback) ──────────────────────────────────────────────────────
 def ocr_rank(crop: np.ndarray) -> Optional[str]:
@@ -224,12 +198,6 @@ def recognize_card(frame, cx, cy, cw, ch) -> Optional[str]:
         suit = refine_red_suit(crop)
     _ocr_hits += 1
     return f"{rank}{suit}"
-
-# ── Борд пустой? ─────────────────────────────────────────────────────────────
-def looks_empty(crop: np.ndarray) -> bool:
-    if crop.size == 0: return True
-    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY).astype(float)
-    return float(np.mean(gray)) < 30 or float(np.std(gray)) < 8
 
 # ── OCR числа (банк/ставка) ───────────────────────────────────────────────────
 def parse_number(text: str) -> Optional[float]:

@@ -24,6 +24,8 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
+from card_utils import detect_suit, refine_red_suit
+
 try:
     import easyocr
     import mss
@@ -113,24 +115,12 @@ def ocr_card_full(reader, crop: np.ndarray) -> Tuple[Optional[str], Optional[str
     if rank is None:
         return None, None, 0.0
 
-    # масть по HSV
-    hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
-    h_c = hsv[:,:,0].astype(float)
-    s_c = hsv[:,:,1].astype(float)
-    v_c = hsv[:,:,2].astype(float)
-    mask = (s_c > 40) & (v_c > 50) & (v_c < 240)
-    sat  = h_c[mask]
-    if len(sat) < 5:
+    # Масть через общую функцию из card_utils (поддерживает белые фоны Ton Poker)
+    suit = detect_suit(crop)
+    if suit == "h":
+        suit = refine_red_suit(crop)
+    if suit is None:
         return rank, None, 0.0
-    med = float(np.median(sat))
-    if med < 15 or med > 160:
-        # красный — уточняем
-        reds = h_c[s_c > 40]
-        suit = "d" if (len(reds) > 0 and 5 < float(np.median(reds)) < 20) else "h"
-    elif med < 85:
-        suit = "c"
-    else:
-        suit = "s"
 
     return rank, suit, conf
 

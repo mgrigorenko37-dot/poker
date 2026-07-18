@@ -1,0 +1,20 @@
+{
+  "_name": "Ton Poker — 6-max, портрет, мобильный браузер",
+  "_source": "Замерено по скриншоту 468×847. Проверь через calibrate.py.",
+
+  "card_height_pct": 9,
+
+  "regions": [
+    { "label": "Hole1",  "cx": 0.43, "cy": 0.79 },
+    { "label": "Hole2",  "cx": 0.57, "cy": 0.79 },
+    { "label": "Board1", "cx": 0.32, "cy": 0.45 },
+    { "label": "Board2", "cx": 0.41, "cy": 0.45 },
+    { "label": "Board3", "cx": 0.51, "cy": 0.45 },
+    { "label": "Board4", "cx": 0.60, "cy": 0.45 },
+    { "label": "Board5", "cx": 0.70, "cy": 0.45 }
+  ],
+
+  "money_regions": {
+    "pot": { "x1": 0.42, "y1": 0.34, "x2": 0.62, "y2": 0.40 }
+  }
+}
