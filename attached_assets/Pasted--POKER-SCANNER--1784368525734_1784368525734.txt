@@ -1,0 +1,52 @@
+──────────────────────────────────────────
+   ♠ POKER SCANNER — главное меню
+──────────────────────────────────────────
+  [1]  ⚡  Авто-режим (запустить всё само)
+  [2]  🚀  Запустить сканер вручную
+  [3]  🎯  Калибровка (карты + деньги)
+  [4]  🃏  Собрать шаблоны карт
+  [5]  📦  Загрузить пресет
+  [6]  📱  Привязать Telegram
+  [7]  🔍  Отладка детектора стола
+  [0]  Выход
+──────────────────────────────────────────
+  Введи номер: 1
+
+  → Запускаю: auto.py
+──────────────────────────────────────────
+
+
+────────────────────────────────────────────────────
+  ♠  POKER SCANNER — авто-режим
+────────────────────────────────────────────────────
+
+🔍 Ищу окно покер-рума... найдено: World Poker Club ✅
+🎨 Детект стола: настроен под World Poker Club
+⚠️  Telegram: TELEGRAM_BOT_TOKEN не задан в Replit Secrets
+🃏 Шаблоны: 0/52 — запускаю сборку в фоне (просто играй)
+
+🚀 Запускаю сканер...
+
+📱 Telegram: проверка пропущена (уже выполнена auto.py)
+📋 Регионы: config.json загружен (запасной вариант если авто не сработает)
+🔍 Авто-детект стола: включён (table_detector)
+🃏 Шаблоны не найдены → только EasyOCR
+   Для точности 99.9% запусти: python collect_templates.py
+🎯 Позиция: фиксировано BTN (запусти calibrate.py Фазу 4)
+Инициализация EasyOCR (fallback, первый запуск ~10 сек)...
+
+Сканирование запущено (5 FPS). Ctrl+C для остановки.
+
+⏳ Открой Ton Poker — скрипт найдёт стол автоматически.
+
+⚠️  Стол не обнаружен — использую ручные регионы из config.json
+C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\torch\ao\nn\quantized\dynamic\modules\rnn.py:162: UserWarning: torch.quantize_per_tensor, torch.quantize_per_channel and other quantized tensor creation functions that produce tensors with dtype torch.quint8, torch.qint8, and torch.qint32 are deprecated and will be removed in a future PyTorch release. Please see https://github.com/pytorch/pytorch/issues/184982 for more information. (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\aten\src\ATen\quantized\Quantizer.cpp:116.)
+  w_ih = torch.quantize_per_tensor(
+EasyOCR готов.
+
+C:\Users\Макс\OneDrive\Desktop\python\auto.py:260: DeprecationWarning: mss.mss is deprecated and will be removed in a future release; use mss.MSS instead
+  with mss.mss() as sct:
+C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\torch\utils\data\dataloader.py:759: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.
+  super().__init__(loader)
+
+  💾 [фон] Сохранён шаблон: Jc  (уверенность 0.94)
