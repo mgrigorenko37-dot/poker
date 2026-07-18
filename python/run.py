@@ -10,12 +10,13 @@ import subprocess
 import sys
 
 MENU = [
-    ("🚀  Запустить сканер",              "poker_scanner.py"),
-    ("🎯  Калибровка (карты + деньги)",   "calibrate.py"),
-    ("🃏  Собрать шаблоны карт",          "collect_templates.py"),
-    ("📦  Загрузить пресет Ton Poker",    "load_preset.py"),
-    ("📱  Привязать Telegram",            "link_telegram.py"),
-    ("🔍  Отладка детектора стола",       "debug_detector.py"),
+    ("⚡  Авто-режим (запустить всё само)",   "auto.py"),
+    ("🚀  Запустить сканер вручную",           "poker_scanner.py"),
+    ("🎯  Калибровка (карты + деньги)",        "calibrate.py"),
+    ("🃏  Собрать шаблоны карт",               "collect_templates.py"),
+    ("📦  Загрузить пресет",                   "load_preset.py"),
+    ("📱  Привязать Telegram",                  "link_telegram.py"),
+    ("🔍  Отладка детектора стола",            "debug_detector.py"),
 ]
 
 DIVIDER = "─" * 42

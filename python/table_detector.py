@@ -284,6 +284,31 @@ def detect_bet_chips(frame: np.ndarray,
 
 # ── Главная точка входа для сканера ──────────────────────────────────────────
 
+def configure_table_detection(
+    hsv_lo: list | tuple,
+    hsv_hi: list | tuple,
+    chip_hsv_lo: list | tuple | None = None,
+    chip_hsv_hi: list | tuple | None = None,
+) -> None:
+    """
+    Настраивает HSV-диапазоны поиска стола и чипов под конкретный рум.
+    Вызывай до первого get_table_state() — обычно из auto.py при детекте окна.
+
+    Пример для World Poker Club (яркий зелёный фетр):
+        configure_table_detection([90, 60, 40], [145, 255, 185])
+    """
+    global _HSV_LO, _HSV_HI, _CHIP_HSV_LO, _CHIP_HSV_HI, _cached_bbox, _ema_bbox
+    _HSV_LO = np.array(hsv_lo, dtype=np.uint8)
+    _HSV_HI = np.array(hsv_hi, dtype=np.uint8)
+    if chip_hsv_lo is not None:
+        _CHIP_HSV_LO = np.array(chip_hsv_lo, dtype=np.uint8)
+    if chip_hsv_hi is not None:
+        _CHIP_HSV_HI = np.array(chip_hsv_hi, dtype=np.uint8)
+    # Сбрасываем кэш — новые цвета, новый поиск
+    _cached_bbox = None
+    _ema_bbox    = None
+
+
 def get_table_state(frame: np.ndarray) -> tuple[Optional[dict], dict]:
     """
     Объединяет find_table + compute_regions.
