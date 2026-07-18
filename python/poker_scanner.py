@@ -569,19 +569,30 @@ def main():
     # Загружаем конфиг мастей (если задан suit_hue_ranges для нестандартного рума)
     configure_suits(cfg)
 
+    # ── Ручная область стола (manual_table_bbox из config.json) ──────────────
+    # Применяем ДО основного цикла — table_detector.find_table() вернёт bbox
+    # напрямую, минуя HSV-поиск. Это решает проблему с полноэкранным режимом.
+    _saved_bbox = cfg.get("manual_table_bbox")
+    if _saved_bbox:
+        from table_detector import set_manual_bbox as _set_bbox
+        _set_bbox((_saved_bbox["x"], _saved_bbox["y"],
+                   _saved_bbox["w"], _saved_bbox["h"]))
+        print(f"📐 Область стола: ручная ({_saved_bbox['w']}×{_saved_bbox['h']} px)")
+    else:
+        print("📐 Область стола: авто-детект по HSV")
+
     # ── Режим регионов ────────────────────────────────────────────────────────
     # Приоритет:
-    #   1. Авто-детект стола (table_detector) — работает без calibrate.py
-    #   2. Ручные регионы из config.json       — запасной вариант
+    #   1. manual_table_bbox → compute_regions() динамически (точнее пресета)
+    #   2. Авто-детект стола по HSV (table_detector)
+    #   3. Ручные регионы из config.json — запасной вариант
     manual_regions  = cfg.get("regions", [])
     use_auto_detect = True   # всегда пробуем авто; фолбек если стол не найден
 
     if len(manual_regions) >= 5:
-        print("📋 Регионы: config.json загружен (запасной вариант если авто не сработает)")
+        print("📋 Регионы: config.json загружен (резерв на случай потери стола)")
     else:
         print("📋 Регионы: только авто-детект (config.json не откалиброван)")
-
-    print("🔍 Авто-детект стола: включён (table_detector)")
 
     # ── Шаблоны ──────────────────────────────────────────────────────────────
     _templates.update(load_templates())

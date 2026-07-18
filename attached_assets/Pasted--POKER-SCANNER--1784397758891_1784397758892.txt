@@ -1,0 +1,42 @@
+──────────────────────────────────────────
+   ♠ POKER SCANNER — главное меню
+──────────────────────────────────────────
+  [1]  ⚡  Авто-режим (запустить всё само)
+  [2]  🚀  Запустить сканер вручную
+  [3]  🎯  Калибровка (карты + деньги)
+  [4]  🃏  Собрать шаблоны карт
+  [5]  📦  Загрузить пресет
+  [6]  📱  Привязать Telegram
+  [7]  🔍  Отладка детектора стола
+  [8]  📐  Выбрать область стола вручную
+  [0]  Выход
+──────────────────────────────────────────
+  Введи номер: 2
+
+  → Запускаю: poker_scanner.py
+──────────────────────────────────────────
+
+📱 Telegram: подключён — советы будут приходить в бот
+📋 Регионы: config.json загружен (запасной вариант если авто не сработает)
+🔍 Авто-детект стола: включён (table_detector)
+🃏 Шаблоны не найдены → только EasyOCR
+   Для точности 99.9% запусти: python collect_templates.py
+🎯 Позиция: фиксировано BTN (запусти calibrate.py Фазу 4)
+Инициализация EasyOCR (fallback, первый запуск ~10 сек)...
+
+Сканирование запущено (5 FPS). Ctrl+C для остановки.
+
+⏳ Открой покер-рум — скрипт найдёт стол автоматически.
+
+C:\Users\Макс\OneDrive\Desktop\python\poker_scanner.py:133: DeprecationWarning: mss.mss is deprecated and will be removed in a future release; use mss.MSS instead
+  with mss.mss() as sct:
+⚠️  Стол не обнаружен — использую ручные регионы из config.json
+C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\torch\ao\nn\quantized\dynamic\modules\rnn.py:162: UserWarning: torch.quantize_per_tensor, torch.quantize_per_channel and other quantized tensor creation functions that produce tensors with dtype torch.quint8, torch.qint8, and torch.qint32 are deprecated and will be removed in a future PyTorch release. Please see https://github.com/pytorch/pytorch/issues/184982 for more information. (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\aten\src\ATen\quantized\Quantizer.cpp:116.)
+  w_ih = torch.quantize_per_tensor(
+EasyOCR готов.
+
+C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\torch\utils\data\dataloader.py:759: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.
+  super().__init__(loader)
+C:\Users\Макс\OneDrive\Desktop\python\poker_scanner.py:133: DeprecationWarning: mss.mss is deprecated and will be removed in a future release; use mss.MSS instead
+  with mss.mss() as sct:
+  → RAISE  Win 19%  [BTN / 6p]  |  3c Ac |

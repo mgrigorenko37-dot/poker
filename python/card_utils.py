@@ -108,7 +108,9 @@ def detect_suit(crop: np.ndarray) -> Optional[str]:
     v_c = hsv[:, :, 2].astype(float)
 
     # ── Фаза 1: насыщенные пиксели ─────────────────────────────────────────────
-    mask = (s_c > 40) & (v_c > 50) & (v_c < 240)
+    # Порог S > 25 (было 40) — красные ♥♦ на белом фоне Ton Poker
+    # имеют насыщенность ~25-35 и раньше срезались, уходя в fallback "c".
+    mask = (s_c > 25) & (v_c > 50) & (v_c < 240)
     sat  = h_c[mask]
     if len(sat) >= 5:
         med = float(np.median(sat))
