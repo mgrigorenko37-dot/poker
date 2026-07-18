@@ -3,6 +3,7 @@ import healthRouter from "./health";
 import pokerRouter from "./poker";
 import analysisRouter from "./analysis";
 import pythonScanRouter from "./python-scan";
+import telegramRouter from "./telegram";
 
 const router: IRouter = Router();
 
@@ -10,5 +11,6 @@ router.use(healthRouter);
 router.use(pokerRouter);
 router.use(analysisRouter);
 router.use(pythonScanRouter);
+router.use(telegramRouter);
 
 export default router;
