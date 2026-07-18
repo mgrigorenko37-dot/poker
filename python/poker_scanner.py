@@ -25,7 +25,6 @@ import sys
 import time
 import hashlib
 import threading
-from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -234,15 +233,32 @@ def looks_empty(crop: np.ndarray) -> bool:
 
 # ── OCR числа (банк/ставка) ───────────────────────────────────────────────────
 def parse_number(text: str) -> Optional[float]:
+    """
+    Разбирает OCR-строку в число.
+    Примеры: "40 413", "10K", "1.5M", "$3.50", "10 / 20", "1,5" (евро), "1.234,56" (евро)
+    """
     text = text.strip()
     if not text: return None
-    if "/" in text: text = text.split("/")[0]
-    text = re.sub(r"[$, ]", "", text).replace(",", ".")
+    # Если формат "ставка / банк" — берём первую часть
+    if "/" in text: text = text.split("/")[0].strip()
+    # Убираем знак доллара
+    text = text.replace("$", "")
+    # Суффикс K/M определяем ДО обработки разделителей
     multiplier = 1.0
     if text:
         s = text[-1].lower()
-        if s in ("k","к"):   multiplier = 1_000;       text = text[:-1]
-        elif s in ("m","м"): multiplier = 1_000_000;   text = text[:-1]
+        if s in ("k", "к"):    multiplier = 1_000;     text = text[:-1]
+        elif s in ("m", "м"):  multiplier = 1_000_000; text = text[:-1]
+    # Обработка разделителей:
+    # Если одновременно есть и точки и запятые — европейский формат "1.234,56"
+    if "." in text and "," in text:
+        text = text.replace(".", "").replace(",", ".")   # убрать тыс. разд., десят. → точка
+    else:
+        # Только запятые (европейская десятичная: "1,5") → точка
+        # Только точки (стандарт: "1.5" или тыс. разд. "1.234") → оставить
+        text = text.replace(",", ".")
+    # Убираем пробелы (тысячные разделители: "40 413")
+    text = text.replace(" ", "")
     try:
         return float(text) * multiplier
     except ValueError:
@@ -348,8 +364,11 @@ def main():
     interval   = 1.0 / SCAN_FPS
     card_h_pct = cfg.get("card_height_pct", 9)
 
-    # Прогрев OCR в фоне только если шаблонов не хватает
-    if n_tmpl < 52:
+    # Прогрев OCR в фоне:
+    # — если шаблонов не хватает (нужен для карт)
+    # — если настроены денежные регионы (нужен для банка/ставки)
+    needs_ocr = n_tmpl < 52 or has_pot or has_bet
+    if needs_ocr:
         threading.Thread(target=get_ocr, daemon=True).start()
 
     print(f"\nСканирование запущено ({SCAN_FPS} FPS). Ctrl+C для остановки.\n")

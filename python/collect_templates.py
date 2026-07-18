@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -56,7 +57,7 @@ def load_config() -> dict:
     with open(CONFIG_PATH) as f:
         return json.load(f)
 
-def capture_screen() -> np.ndarray | None:
+def capture_screen() -> Optional[np.ndarray]:
     try:
         with mss.mss() as sct:
             mon = sct.monitors[1]
@@ -84,7 +85,7 @@ def loaded_cards() -> set:
                 found.add(key)
     return found
 
-def ocr_card_full(reader, crop: np.ndarray) -> tuple[str | None, str | None, float]:
+def ocr_card_full(reader, crop: np.ndarray) -> Tuple[Optional[str], Optional[str], float]:
     """
     Распознаёт ранг и масть из обрезка карты.
     Возвращает (rank, suit, confidence) или (None, None, 0).
@@ -152,6 +153,21 @@ def main():
 
     card_h_pct = cfg.get("card_height_pct", 9)
 
+    # Открываем маленькое окно прогресса — нужно для cv2.waitKey()
+    STATUS_WIN = "Сбор шаблонов [Q = выход]"
+    cv2.namedWindow(STATUS_WIN, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(STATUS_WIN, 520, 60)
+
+    def _draw_status(done: int, total: int) -> None:
+        img = np.zeros((60, 520, 3), dtype=np.uint8)
+        filled = int(500 * done / max(1, total))
+        cv2.rectangle(img, (10, 20), (10 + filled, 40), (0, 200, 80), -1)
+        cv2.rectangle(img, (10, 20), (510, 40), (100, 100, 100), 1)
+        label = f"{done}/{total} cards"
+        cv2.putText(img, label, (10, 58),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+        cv2.imshow(STATUS_WIN, img)
+
     while True:
         collected = loaded_cards()
         missing   = ALL_CARDS - collected
@@ -163,6 +179,7 @@ def main():
         filled  = int(bar_len * done / total)
         bar     = "█" * filled + "░" * (bar_len - filled)
         print(f"\r[{bar}] {done}/{total}  ", end="", flush=True)
+        _draw_status(done, total)
 
         if not missing:
             print("\n\n✅ Все 52 карты собраны!")
@@ -203,13 +220,14 @@ def main():
             missing.discard(key)
             print(f"\n  💾 {key}  (уверенность {conf:.2f})  → {path}")
 
-        # ── Клавиша ─────────────────────────────────────────────────────────
-        # Неблокирующий waitKey через cv2 (если окна нет — просто sleep)
+        # ── Клавиша (waitKey работает т.к. STATUS_WIN открыт) ───────────────
         k = cv2.waitKey(1) & 0xFF
-        if k == ord('q') or k == 27:
+        if k in (ord('q'), ord('Q'), 27):   # Q, q, ESC
             break
 
         time.sleep(0.25)  # 4 FPS достаточно для сбора
+
+    cv2.destroyAllWindows()
 
     remaining = ALL_CARDS - loaded_cards()
     if remaining:
