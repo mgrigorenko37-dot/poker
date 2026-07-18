@@ -130,20 +130,26 @@ def select_region(frame: np.ndarray) -> Optional[tuple[int, int, int, int]]:
 
     while True:
         key = cv2.waitKey(50) & 0xFF
-        if key == ord("s"):
+
+        # S / s / Enter — подтвердить
+        if key in (ord("s"), ord("S"), 13):
             if confirmed[0]:
                 cv2.destroyAllWindows()
                 return confirmed[0]
-            print("  ⚠️  Сначала обведи область мышью")
-        elif key == ord("r"):
+            print("  ⚠️  Сначала обведи область мышью (зажми ЛКМ и проведи)")
+
+        # R / r — сброс
+        elif key in (ord("r"), ord("R")):
             confirmed[0]  = None
             rect_start[0] = None
             rect_cur[0]   = None
-            _draw()
             print("  ↺ Сброс — рисуй заново")
-        elif key == 27:   # ESC
+
+        # ESC — отмена
+        elif key == 27:
             cv2.destroyAllWindows()
             return None
+
         _draw()
 
 
