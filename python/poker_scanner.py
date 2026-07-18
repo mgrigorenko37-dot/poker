@@ -49,8 +49,9 @@ def get_ocr():
     return _ocr_reader
 
 # ── Константы ─────────────────────────────────────────────────────────────────
-CONFIG_PATH    = os.path.join(os.path.dirname(__file__), "config.json")
-TEMPLATES_DIR  = os.path.join(os.path.dirname(__file__), "templates")
+CONFIG_PATH        = os.path.join(os.path.dirname(__file__), "config.json")
+TEMPLATES_DIR      = os.path.join(os.path.dirname(__file__), "templates")
+DEALER_TMPL_PATH   = os.path.join(TEMPLATES_DIR, "dealer_button.png")
 
 RANK_MAP = {
     "a":"A","k":"K","q":"Q","j":"J","10":"T","t":"T",
@@ -58,10 +59,11 @@ RANK_MAP = {
     "i":"J","l":"J","1":"A",
 }
 VALID_RANKS     = set("A K Q J T 9 8 7 6 5 4 3 2".split())
-SCAN_FPS        = 5
-MIN_RANK_CONF   = 0.3
-MIN_MONEY_CONF  = 0.2
-TMPL_THRESHOLD  = 0.82   # минимальный TM_CCOEFF_NORMED для принятия шаблона
+SCAN_FPS         = 5
+MIN_RANK_CONF    = 0.3
+MIN_MONEY_CONF   = 0.2
+TMPL_THRESHOLD   = 0.82   # минимальный TM_CCOEFF_NORMED для принятия шаблона
+DEALER_THRESHOLD = 0.65   # порог для кнопки D (ниже чем карты — она меньше и может быть частично закрыта)
 
 # ── Конфиг ────────────────────────────────────────────────────────────────────
 def load_config() -> dict:
@@ -258,6 +260,63 @@ def ocr_number(frame: np.ndarray, region: dict) -> Optional[float]:
             best_conf = conf; best_val = val
     return best_val
 
+# ── Кнопка дилера — шаблон и поиск ──────────────────────────────────────────
+def load_dealer_template() -> Optional[np.ndarray]:
+    """Загружает шаблон кнопки D из templates/dealer_button.png (grayscale)."""
+    if not os.path.exists(DEALER_TMPL_PATH):
+        return None
+    tmpl = cv2.imread(DEALER_TMPL_PATH, cv2.IMREAD_GRAYSCALE)
+    return tmpl if tmpl is not None and tmpl.size > 0 else None
+
+def find_dealer_button(frame: np.ndarray,
+                       dealer_tmpl: np.ndarray) -> Optional[tuple[float, float]]:
+    """
+    Ищет кнопку D на фрейме через TM_CCOEFF_NORMED.
+    Возвращает (cx, cy) нормализованные 0..1 или None если не найдена.
+    """
+    gray   = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+    result = cv2.matchTemplate(gray, dealer_tmpl, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+    if max_val < DEALER_THRESHOLD:
+        return None
+    fh, fw    = frame.shape[:2]
+    th, tw    = dealer_tmpl.shape[:2]
+    cx = (max_loc[0] + tw / 2) / fw
+    cy = (max_loc[1] + th / 2) / fh
+    return cx, cy
+
+# ── Вычисление позиции ────────────────────────────────────────────────────────
+# Позиции в порядке: 0 = BTN (дилер), 1 = SB, 2 = BB, 3 = UTG …
+_POSITIONS_6 = ["BTN", "SB", "BB", "UTG", "HJ",  "CO"]
+_POSITIONS_9 = ["BTN", "SB", "BB", "UTG", "UTG+1", "UTG+2", "MP", "HJ", "CO"]
+
+def compute_position(hero_seat: int, dealer_seat: int, total_seats: int) -> str:
+    """
+    hero_seat  — индекс места героя (0..total_seats-1)
+    dealer_seat — индекс места дилера
+    total_seats — число мест за столом
+    Возвращает строку позиции: 'BTN', 'SB', 'BB', 'UTG' …
+    """
+    table  = _POSITIONS_6 if total_seats <= 6 else _POSITIONS_9
+    offset = (hero_seat - dealer_seat) % total_seats
+    return table[offset] if offset < len(table) else "MP"
+
+def nearest_seat(dealer_cx: float, dealer_cy: float,
+                 hero_cx: float,   hero_cy: float,
+                 seat_regions: list) -> int:
+    """
+    Возвращает индекс ближайшего к кнопке D места.
+    Индекс 0 = герой, 1..N = оппоненты из seat_regions.
+    """
+    all_seats = [{"cx": hero_cx, "cy": hero_cy}] + list(seat_regions)
+    best_idx, best_dist = 0, float("inf")
+    for i, s in enumerate(all_seats):
+        d = (dealer_cx - s["cx"]) ** 2 + (dealer_cy - s["cy"]) ** 2
+        if d < best_dist:
+            best_dist = d
+            best_idx  = i
+    return best_idx
+
 # ── Активные игроки ───────────────────────────────────────────────────────────
 def count_active_players(frame: np.ndarray, seat_regions: list,
                          cw: int, ch: int) -> int:
@@ -285,7 +344,7 @@ def has_duplicates(cards: list) -> bool:
 # ── Отправка ─────────────────────────────────────────────────────────────────
 _last_key = ""
 
-def send_scan(cfg, hole, board, pot, bet, players: int) -> None:
+def send_scan(cfg, hole, board, pot, bet, players: int, position: str) -> None:
     global _last_key
     payload = {
         "holeCards":  hole,
@@ -293,7 +352,7 @@ def send_scan(cfg, hole, board, pot, bet, players: int) -> None:
         "potSize":    round(pot, 2) if pot is not None else 0,
         "betToCall":  round(bet, 2) if bet is not None else 0,
         "players":    players,
-        "position":   cfg.get("position", "BTN"),
+        "position":   position,
     }
     key = hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     if key == _last_key: return
@@ -306,7 +365,7 @@ def send_scan(cfg, hole, board, pot, bet, players: int) -> None:
         equity = round((data.get("equity") or 0) * 100)
         pot_s  = f"  банк={pot:.0f}" if pot else ""
         bet_s  = f"  колл={bet:.0f}" if bet else ""
-        print(f"  → {action}  Win {equity}%  |  {' '.join(hole)} | {' '.join(board)}{pot_s}{bet_s}")
+        print(f"  → {action}  Win {equity}%  [{position} / {players}p]  |  {' '.join(hole)} | {' '.join(board)}{pot_s}{bet_s}")
     except requests.exceptions.ConnectionError:
         print(f"  ⚠️  Сервер недоступен ({url[:50]}…)")
     except Exception as e:
@@ -354,6 +413,19 @@ def main():
         print(f"👥 Игроки: авто-детект по {len(seat_regions)} местам (+ герой)")
     else:
         print(f"👥 Игроки: фиксировано {players_fallback} (настрой Фазу 3 в calibrate.py)")
+
+    # ── Кнопка дилера / позиция ───────────────────────────────────────────────
+    dealer_tmpl = load_dealer_template()
+    position_fallback: str = cfg.get("position", "BTN")
+    # Позиция героя: центр между двумя своими картами (regions[0] и regions[1])
+    hero_cx = (regions[0]["cx"] + regions[1]["cx"]) / 2
+    hero_cy = (regions[0]["cy"] + regions[1]["cy"]) / 2
+    total_seats = len(seat_regions) + 1   # оппоненты + герой
+    _last_position: str = position_fallback  # кэш — не меняем позицию пока D не найдена
+    if dealer_tmpl is not None:
+        print(f"🎯 Позиция: авто-детект (шаблон D загружен, {total_seats} мест за столом)")
+    else:
+        print(f"🎯 Позиция: фиксировано {position_fallback} (настрой Фазу 4 в calibrate.py)")
 
     hole_regs  = regions[:2]
     board_regs = regions[2:]
@@ -407,11 +479,20 @@ def main():
         detected = count_active_players(frame, seat_regions, cw, ch)
         players  = detected if detected is not None else players_fallback
 
+        # ── Позиция дилера ─────────────────────────────────────────────────
+        if dealer_tmpl is not None:
+            dealer_pos = find_dealer_button(frame, dealer_tmpl)
+            if dealer_pos is not None:
+                d_seat    = nearest_seat(dealer_pos[0], dealer_pos[1],
+                                         hero_cx, hero_cy, seat_regions)
+                _last_position = compute_position(0, d_seat, total_seats)
+        position = _last_position   # используем последнюю найденную (кнопка иногда перекрыта)
+
         # ── Деньги ─────────────────────────────────────────────────────────
         pot: Optional[float] = ocr_number(frame, money_regions["pot"]) if has_pot else None
         bet: Optional[float] = ocr_number(frame, money_regions["bet"]) if has_bet else None
 
-        send_scan(cfg, hole, board, pot, bet, players)
+        send_scan(cfg, hole, board, pot, bet, players, position)
 
         # ── Статистика раз в 60 тиков (~12 сек) ────────────────────────────
         stat_tick += 1

@@ -8,6 +8,9 @@ calibrate.py — интерактивная калибровка позиций 
 Фаза 2 — Деньги: зажимаешь ЛКМ и рисуешь прямоугольник вокруг суммы банка,
           потом то же самое для суммы ставки/колла.
           Нажми Q чтобы пропустить (если рум не показывает колл в нужном месте).
+Фаза 3 — Места: кликаешь по зоне карт рубашкой каждого оппонента.
+Фаза 4 — Дилер: кликаешь по центру кнопки «D» — скрипт сохраняет шаблон
+          для автоматического определения позиции (UTG / CO / BTN …).
 """
 
 import json
@@ -23,8 +26,10 @@ except ImportError:
     print("Установи зависимости: pip install -r requirements.txt")
     sys.exit(1)
 
-CONFIG_PATH  = os.path.join(os.path.dirname(__file__), "config.json")
-EXAMPLE_PATH = os.path.join(os.path.dirname(__file__), "config.example.json")
+CONFIG_PATH       = os.path.join(os.path.dirname(__file__), "config.json")
+EXAMPLE_PATH      = os.path.join(os.path.dirname(__file__), "config.example.json")
+TEMPLATES_DIR     = os.path.join(os.path.dirname(__file__), "templates")
+DEALER_TMPL_PATH  = os.path.join(TEMPLATES_DIR, "dealer_button.png")
 
 WIN_NAME = "Poker Calibration"
 
@@ -322,6 +327,75 @@ def run_seat_phase() -> list[dict]:
             return list(_seat_points)   # сохраняем что успели
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  ФАЗА 4 — кнопка дилера (один клик → шаблон сохраняется автоматически)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Кликай точно по центру кнопки «D». Скрипт вырежет квадратный crop вокруг
+# клика и сохранит его в templates/dealer_button.png.
+# poker_scanner.py будет искать этот шаблон на каждом фрейме.
+
+_dealer_clicked = False
+
+def _dealer_mouse(event, x, y, flags, param):
+    global _dealer_clicked
+    if event == cv2.EVENT_LBUTTONDOWN and not _dealer_clicked:
+        h, w = _frame.shape[:2]
+        # Радиус кропа — ~3% высоты экрана, минимум 15 px
+        r = max(15, int(h * 0.03))
+        x1 = max(0, x - r); y1 = max(0, y - r)
+        x2 = min(w, x + r); y2 = min(h, y + r)
+        crop_rgb = _frame[y1:y2, x1:x2]
+        if crop_rgb.size == 0:
+            print("  ⚠️  Слишком мало пикселей — попробуй ещё раз")
+            return
+        os.makedirs(TEMPLATES_DIR, exist_ok=True)
+        bgr = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(DEALER_TMPL_PATH, bgr)
+        cx, cy = x / w, y / h
+        print(f"  ✓ Дилер: ({cx:.4f}, {cy:.4f})  шаблон {crop_rgb.shape[1]}×{crop_rgb.shape[0]} px → {DEALER_TMPL_PATH}")
+        _dealer_clicked = True
+        _draw_dealer_overlay(cx, cy)
+
+def _draw_dealer_overlay(cx: float = None, cy: float = None):
+    vis = _frame.copy()
+    h, w = vis.shape[:2]
+    if cx is not None:
+        px, py = int(cx * w), int(cy * h)
+        cv2.circle(vis, (px, py), 14, (0, 180, 255), 2)
+        cv2.putText(vis, "D", (px + 16, py - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 180, 255), 2)
+        cv2.putText(vis, "Шаблон сохранён! Нажми S для завершения",
+                    (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 80), 2)
+    else:
+        cv2.putText(vis, "Кликни по центру кнопки D (дилер)  [Q = пропустить]",
+                    (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 220, 0), 2)
+    cv2.imshow(WIN_NAME, vis)
+
+def run_dealer_phase() -> bool:
+    """Возвращает True если шаблон был сохранён, False если пропущен."""
+    global _dealer_clicked
+    _dealer_clicked = False
+
+    cv2.setMouseCallback(WIN_NAME, _dealer_mouse)
+    _draw_dealer_overlay()
+
+    print("\n▶ Фаза 4 — КНОПКА ДИЛЕРА")
+    print("  Кликни точно по центру фишки «D» за столом.")
+    print("  Q = пропустить (позиция останется ручной),  S = сохранить и выйти\n")
+
+    while True:
+        key = cv2.waitKey(50) & 0xFF
+        if key == ord('q'):
+            print("  — Фаза 4 пропущена (позиция не будет определяться автоматически)")
+            return False
+        elif key == ord('s'):
+            if not _dealer_clicked:
+                print("  ⚠️  Сначала кликни по кнопке D")
+            else:
+                return True
+        elif key == 27:
+            return _dealer_clicked
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 def main():
@@ -364,6 +438,20 @@ def main():
 
     seats = run_seat_phase()
     cfg["seat_regions"] = seats
+
+    # ── Фаза 4: кнопка дилера ─────────────────────────────────────────────────
+    print("\nОбнови скриншот перед калибровкой дилера (Enter) или пропусти (пробел).")
+    print("Совет: кнопка D должна быть видна на экране.")
+    key3 = cv2.waitKey(3000) & 0xFF
+    if key3 == 13 or key3 == 255:
+        _frame = capture_screen()
+        print("Скриншот обновлён.")
+
+    dealer_saved = run_dealer_phase()
+    if dealer_saved:
+        print("✅ Позиция будет определяться автоматически по кнопке D.")
+    else:
+        print("⚠️  Авто-позиция отключена — позиция берётся из config.json (поле 'position').")
 
     cv2.destroyAllWindows()
     save_config(cfg)
