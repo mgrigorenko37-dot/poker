@@ -38,6 +38,7 @@ function buildResult(raw: {
   betToCall: number;
   players: number;
   position: string;
+  villainAggression: number;
 }) {
   const hole = raw.holeCards.map(parseCard);
   const board = raw.boardCards.map(parseCard);
@@ -53,6 +54,7 @@ function buildResult(raw: {
     raw.players,
     raw.position,
     sim,
+    raw.villainAggression,
   );
 
   return {
@@ -99,6 +101,11 @@ router.post("/python/scan", (req, res) => {
     betToCall:  typeof body.betToCall === "number" ? body.betToCall : 0,
     players:    typeof body.players   === "number" ? Math.max(2, Math.min(9, body.players)) : 2,
     position:   typeof body.position  === "string" ? body.position  : "BTN",
+    // villainAggression: per-opponent bluff multiplier (0.5 = passive, 1.0 = baseline, 2.0 = hyper-aggressive)
+    // Sent by python scanner from config.json "villain_aggression" field.
+    villainAggression: typeof body.villainAggression === "number"
+      ? Math.max(0.2, Math.min(3.0, body.villainAggression))
+      : 1.0,
   };
 
   try {

@@ -63,7 +63,7 @@ def find_table(frame: np.ndarray) -> Optional[tuple[int, int, int, int]]:
     Возвращает (x, y, w, h) bounding box с EMA-сглаживанием,
     или None если стол не найден (окно свёрнуто / перекрыто).
     """
-    global _cached_bbox, _miss_streak
+    global _cached_bbox, _miss_streak, _ema_bbox  # _ema_bbox нужен для сброса
 
     hsv  = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
     mask = cv2.inRange(hsv, _HSV_LO, _HSV_HI)
@@ -80,7 +80,7 @@ def find_table(frame: np.ndarray) -> Optional[tuple[int, int, int, int]]:
         _miss_streak += 1
         if _miss_streak >= _MISS_RESET:
             _cached_bbox = None
-            _ema_bbox    = None
+            _ema_bbox    = None  # теперь реально сбрасывает модульную переменную
         return None
 
     # Отсекаем контуры меньше порога площади
@@ -91,6 +91,7 @@ def find_table(frame: np.ndarray) -> Optional[tuple[int, int, int, int]]:
         _miss_streak += 1
         if _miss_streak >= _MISS_RESET:
             _cached_bbox = None
+            _ema_bbox    = None  # сброс EMA и здесь — стол не виден достаточно долго
         return None
 
     _miss_streak = 0

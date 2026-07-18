@@ -32,7 +32,7 @@ import cv2
 import numpy as np
 import requests
 
-from card_utils import detect_suit, refine_red_suit, extract_card_region, looks_empty
+from card_utils import detect_suit, refine_red_suit, extract_card_region, looks_empty, configure_suits
 from table_detector import get_table_state
 
 # ── EasyOCR — fallback когда нет шаблона ────────────────────────────────────
@@ -145,6 +145,29 @@ def extract_money_region(frame, region: dict) -> np.ndarray:
     x1 = int(region["x1"] * fw); y1 = int(region["y1"] * fh)
     x2 = int(region["x2"] * fw); y2 = int(region["y2"] * fh)
     return frame[max(0,y1):min(fh,y2), max(0,x1):min(fw,x2)]
+
+# ── Фильтр стабильности региона (анти-анимация) ───────────────────────────────
+# Хранит grayscale-снимок каждого денежного региона с прошлого тика.
+# Если MAD (mean absolute difference) > порога — регион ещё анимируется,
+# OCR запускать бессмысленно: вернём последнее известное значение.
+_region_prev: dict[str, Optional[np.ndarray]] = {}
+_STABLE_MAD_THRESHOLD = 12.0   # пиксельных единиц яркости; 12 ≈ заметное движение
+
+def is_region_stable(key: str, crop: np.ndarray) -> bool:
+    """
+    True если регион стабилен между текущим и прошлым кадром.
+    key — уникальный идентификатор региона ('pot' / 'bet').
+    Всегда обновляет кэш независимо от результата.
+    """
+    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    prev = _region_prev.get(key)
+    _region_prev[key] = gray
+
+    if prev is None or prev.shape != gray.shape:
+        return True   # первый кадр — считаем стабильным
+
+    mad = float(np.mean(np.abs(gray - prev)))
+    return mad <= _STABLE_MAD_THRESHOLD
 
 # ── OCR ранга (fallback) ──────────────────────────────────────────────────────
 def ocr_rank(crop: np.ndarray) -> Optional[str]:
@@ -343,18 +366,80 @@ def count_active_players(frame: np.ndarray, seat_regions: list,
 def has_duplicates(cards: list) -> bool:
     return len(cards) != len(set(cards))
 
+# ── Кросс-кадровый фильтр денег ───────────────────────────────────────────────
+class MoneyFilter:
+    """
+    Отсекает OCR-галлюцинации при чтении банка / ставки.
+
+    Правила:
+    - None → держать последнее известное значение.
+    - Подозрительное падение (< 50% от прошлого) или спайк (> 10×) →
+      ждём подтверждения в следующем кадре (два кадра подряд должны совпасть
+      в пределах ±15%). Пока подтверждения нет — возвращаем старое значение.
+    - Разумное изменение → принимаем сразу.
+
+    reset() вызывается при смене hole-карт (новая раздача) чтобы не блокировать
+    легитимный сброс банка до нуля между раздачами.
+    """
+    def __init__(self,
+                 max_drop_ratio: float = 0.50,
+                 max_spike_ratio: float = 10.0,
+                 confirm_tol: float = 0.15):
+        self.last: Optional[float] = None
+        self._candidate: Optional[float] = None
+        self._max_drop  = max_drop_ratio
+        self._max_spike = max_spike_ratio
+        self._confirm   = confirm_tol
+
+    def reset(self) -> None:
+        self.last       = None
+        self._candidate = None
+
+    def update(self, new_val: Optional[float]) -> Optional[float]:
+        if new_val is None:
+            self._candidate = None
+            return self.last            # держим последнее хорошее
+
+        if self.last is None:           # первое чтение — принимаем сразу
+            self.last = new_val
+            self._candidate = None
+            return new_val
+
+        is_suspicious = (
+            new_val < self.last * self._max_drop or
+            new_val > self.last * self._max_spike
+        )
+
+        if is_suspicious:
+            if (self._candidate is not None and
+                    abs(new_val - self._candidate) / max(1.0, self._candidate) < self._confirm):
+                # Два кадра подряд согласны — принимаем
+                self.last = new_val
+                self._candidate = None
+                return new_val
+            else:
+                self._candidate = new_val   # ждём следующего кадра
+                return self.last            # пока возвращаем старое
+        
+        self.last = new_val
+        self._candidate = None
+        return new_val
+
 # ── Отправка ─────────────────────────────────────────────────────────────────
 _last_key = ""
 
 def send_scan(cfg, hole, board, pot, bet, players: int, position: str) -> None:
     global _last_key
     payload = {
-        "holeCards":  hole,
-        "boardCards": board,
-        "potSize":    round(pot, 2) if pot is not None else 0,
-        "betToCall":  round(bet, 2) if bet is not None else 0,
-        "players":    players,
-        "position":   position,
+        "holeCards":        hole,
+        "boardCards":       board,
+        "potSize":          round(pot, 2) if pot is not None else 0,
+        "betToCall":        round(bet, 2) if bet is not None else 0,
+        "players":          players,
+        "position":         position,
+        # Множитель агрессии виллана: 0.5 = пассивный, 1.0 = базовый, 2.0 = гиперагрессивный.
+        # Настраивается в config.json → "villain_aggression".
+        "villainAggression": cfg.get("villain_aggression", 1.0),
     }
     key = hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     if key == _last_key: return
@@ -382,6 +467,9 @@ def main():
     if "ТВОЙ_ДОМЕН" in url or not url:
         print("❌ Укажи server_url в config.json")
         sys.exit(1)
+
+    # Загружаем конфиг мастей (если задан suit_hue_ranges для нестандартного рума)
+    configure_suits(cfg)
 
     # ── Режим регионов ────────────────────────────────────────────────────────
     # Приоритет:
@@ -429,6 +517,11 @@ def main():
 
     interval   = 1.0 / SCAN_FPS
     card_h_pct = cfg.get("card_height_pct", 9)
+
+    # ── Фильтры денег (кросс-кадровая валидация OCR) ─────────────────────────
+    pot_filter = MoneyFilter(max_drop_ratio=0.50, max_spike_ratio=10.0)
+    bet_filter = MoneyFilter(max_drop_ratio=0.10, max_spike_ratio=20.0)
+    _last_hole_key: str = ""   # для детекта смены раздачи
 
     print(f"\nСканирование запущено ({SCAN_FPS} FPS). Ctrl+C для остановки.\n")
     print("⏳ Открой Ton Poker — скрипт найдёт стол автоматически.\n")
@@ -504,6 +597,14 @@ def main():
             time.sleep(max(0, interval - (time.perf_counter() - t0)))
             continue
 
+        # ── Сброс денежных фильтров при смене раздачи ──────────────────────
+        # Hole-карты сменились → новая раздача → банк может легально упасть до 0.
+        hole_key = "".join(sorted(hole))
+        if hole_key != _last_hole_key:
+            pot_filter.reset()
+            bet_filter.reset()
+            _last_hole_key = hole_key
+
         # ── Активные игроки ────────────────────────────────────────────────
         detected = count_active_players(frame, seat_regions, cw, ch)
         players  = detected if detected is not None else players_fallback
@@ -520,11 +621,31 @@ def main():
                 _last_position = compute_position(0, d_seat, total_seats)
         position = _last_position
 
-        # ── Деньги ─────────────────────────────────────────────────────────
-        pot: Optional[float] = ocr_number(frame, money_regions["pot"]) \
-            if "pot" in money_regions else None
-        bet: Optional[float] = ocr_number(frame, money_regions.get("bet", {})) \
-            if "bet" in money_regions else None
+        # ── Деньги (фильтр стабильности + кросс-кадровая валидация) ──────────
+        # Сначала проверяем что регион не анимируется (MAD < порога).
+        # Если анимация идёт — OCR не запускаем, MoneyFilter вернёт последнее
+        # хорошее значение. Если регион стабилен — OCR + валидация фильтром.
+        if "pot" in money_regions:
+            pot_crop = extract_money_region(frame, money_regions["pot"])
+            if is_region_stable("pot", pot_crop):
+                raw_pot = ocr_number(frame, money_regions["pot"])
+            else:
+                raw_pot = None   # регион движется, пропускаем OCR
+        else:
+            raw_pot = None
+
+        bet_region = money_regions.get("bet", {})
+        if bet_region:
+            bet_crop = extract_money_region(frame, bet_region)
+            if is_region_stable("bet", bet_crop):
+                raw_bet = ocr_number(frame, bet_region)
+            else:
+                raw_bet = None
+        else:
+            raw_bet = None
+
+        pot = pot_filter.update(raw_pot)
+        bet = bet_filter.update(raw_bet)
 
         send_scan(cfg, hole, board, pot, bet, players, position)
 

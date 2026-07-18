@@ -9,6 +9,20 @@ card_utils.py — общие утилиты распознавания карт.
 Различение ♣ vs ♠:
   ♠ (пика): острый верх — горизонтальный span верхней четверти < 35% ширины карты
   ♣ (трефа): две круглые доли вверху — span > 40%
+
+Конфигурация масти:
+  По умолчанию — стандартная 2-color колода (♥♦ красные, ♣♠ чёрные).
+  Для 4-color колод (или нестандартных румов) вызови configure_suits(cfg)
+  с секцией "suit_hue_ranges" из config.json.
+
+  Структура "suit_hue_ranges" в config.json:
+  {
+    "h": [0, 15, 160, 180],   // hue-диапазоны для ♥  (список пар [lo,hi])
+    "d": [[0, 50]],            // для ♦
+    "c": [[50, 140]],          // для ♣
+    "s": [[140, 180]]          // для ♠
+  }
+  Если секция отсутствует — используются встроенные значения.
 """
 
 from typing import Optional
@@ -16,14 +30,73 @@ import cv2
 import numpy as np
 
 
+# ── Конфигурация оттенков масти ───────────────────────────────────────────────
+# Каждая масть задаётся как список пар [lo, hi] в OpenCV HSV (H: 0–180).
+# Значение считается принадлежащей масти если медиана H попадает хоть в один диапазон.
+#
+# Стандарт по умолчанию (2-color + жёлтые бубны некоторых румов):
+#   h: красный   (H < 15 или H > 160)
+#   d: оранжевый (H 15–50)
+#   c: зелёный   (H 50–140)
+#   s: синий     (H 140–160)
+_DEFAULT_HUE_RANGES: dict[str, list[tuple[int, int]]] = {
+    "h": [(0, 15), (160, 180)],
+    "d": [(15, 50)],
+    "c": [(50, 140)],
+    "s": [(140, 160)],
+}
+
+# Активная конфигурация — изменяется через configure_suits()
+_suit_hue_ranges: dict[str, list[tuple[int, int]]] = {k: list(v) for k, v in _DEFAULT_HUE_RANGES.items()}
+
+
+def configure_suits(cfg: dict) -> None:
+    """
+    Загружает секцию "suit_hue_ranges" из конфига в активную конфигурацию.
+
+    Ожидаемый формат в config.json:
+      "suit_hue_ranges": {
+        "h": [[0, 15], [160, 180]],
+        "d": [[15, 50]],
+        "c": [[50, 140]],
+        "s": [[140, 160]]
+      }
+
+    Если секции нет — оставляет встроенные значения без изменений.
+    Пример для 4-color колоды (PokerStars 4-color):
+      "h": [[0, 15], [160, 180]],   ♥ красный
+      "d": [[100, 130]],             ♦ синий
+      "c": [[55, 95]],               ♣ зелёный
+      "s": []                        ♠ чёрный — фаза 2 (shape-based)
+    """
+    global _suit_hue_ranges
+    ranges = cfg.get("suit_hue_ranges")
+    if not isinstance(ranges, dict):
+        return   # секция отсутствует — оставляем значения по умолчанию
+
+    new: dict[str, list[tuple[int, int]]] = {}
+    for suit in ("h", "d", "c", "s"):
+        raw = ranges.get(suit, [])
+        new[suit] = [(int(lo), int(hi)) for lo, hi in raw]
+
+    _suit_hue_ranges = new
+    suits_desc = {s: _suit_hue_ranges[s] for s in "hdcs"}
+    print(f"🎨 Настройка мастей загружена из конфига: {suits_desc}")
+
+
+def _hue_matches(med: float, ranges: list[tuple[int, int]]) -> bool:
+    """True если медиана оттенка попадает хоть в один диапазон."""
+    return any(lo <= med <= hi for lo, hi in ranges)
+
+
 def detect_suit(crop: np.ndarray) -> Optional[str]:
     """
     Возвращает 'h', 'd', 'c', 's' или None (пустой слот / не удалось).
 
     Работает для:
-      • Цветных румов (пики синие, трефы зелёные и т.п.) — фаза 1
+      • Цветных румов — фаза 1 (используются _suit_hue_ranges из конфига)
       • Белый фон + красные масти (♥♦) — фаза 1
-      • Белый фон + чёрные масти (♣♠, Ton Poker) — фаза 2
+      • Белый фон + чёрные масти (♣♠, Ton Poker) — фаза 2 (shape-based)
     """
     if crop.size == 0:
         return None
@@ -39,13 +112,13 @@ def detect_suit(crop: np.ndarray) -> Optional[str]:
     sat  = h_c[mask]
     if len(sat) >= 5:
         med = float(np.median(sat))
-        if med < 15 or med > 160:
-            return "h"   # красный — уточнится в refine_red_suit()
-        if med < 50:
-            return "d"   # жёлто-оранжевый → бубны (некоторые румы)
-        if med < 140:
-            return "c"   # зелёный → трефы
-        return "s"        # синий/фиолетовый → пики
+        # Перебираем масти в порядке h→d→c→s; первое совпадение выигрывает.
+        # Порядок важен: ♥ первой чтобы широкий красный диапазон не съел ♦.
+        for suit in ("h", "d", "c", "s"):
+            ranges = _suit_hue_ranges.get(suit, [])
+            if ranges and _hue_matches(med, ranges):
+                return suit
+        # Ни один диапазон не совпал — падаем в фазу 2 (чёрные масти)
 
     # ── Фаза 2: белый фон + чёрная масть (Ton Poker, PokerStars classic и др.) ─
     # Берём центральную зону карты — исключаем ранг в верхнем-левом углу
@@ -85,8 +158,9 @@ def refine_red_suit(crop: np.ndarray) -> str:
     if len(reds) == 0:
         return "h"
     med = float(np.median(reds))
-    # Бубны чуть более оранжевые (hue 5–20), червы ближе к 0/180
-    return "d" if 5 < med < 20 else "h"
+    # Используем диапазон ♦ из конфига если он задан, иначе встроенный порог
+    d_ranges = _suit_hue_ranges.get("d", [(15, 50)])
+    return "d" if any(lo <= med <= hi for lo, hi in d_ranges) else "h"
 
 
 def extract_card_region(frame: np.ndarray, cx: float, cy: float,

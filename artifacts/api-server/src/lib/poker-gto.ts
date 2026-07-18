@@ -58,12 +58,20 @@ export interface BluffRead {
 // IMPORTANT: this is a population-tendency heuristic based on bet sizing, board
 // texture and street — it cannot read an opponent's actual cards or intent.
 // Treat it as one extra input, never as certainty.
+//
+// villainAggression (default 1.0) is a per-opponent scaling factor:
+//   < 1.0 → passive/station (compress bluff signals, stretch value signals)
+//   1.0   → population baseline
+//   > 1.0 → hyper-aggressive (amplify bluff signals)
+// Applied as: adjusted = 0.5 + (raw - 0.5) * villainAggression
+// This keeps the truly ambiguous midpoint (0.5) fixed.
 export function getBluffRead(
   betToCall: number,
   potBeforeBet: number,
   boardCards: Card[],
   players: number,
   street: 'flop' | 'turn' | 'river',
+  villainAggression: number = 1.0,
 ): BluffRead | null {
   if (betToCall <= 0 || potBeforeBet <= 0) return null;
 
@@ -106,6 +114,21 @@ export function getBluffRead(
   }
 
   score = Math.max(0.05, Math.min(0.95, score));
+
+  // Применяем индивидуальный множитель агрессии виллана.
+  // Формула: deviation от нейтральной точки (0.5) масштабируется множителем.
+  // Пример: score=0.7, aggression=2.0 → 0.5+(0.7-0.5)*2 = 0.9 (почти точно блеф)
+  //          score=0.3, aggression=0.5 → 0.5+(0.3-0.5)*0.5 = 0.4 (слабее вэлью-сигнал)
+  const aggrClamp = Math.max(0.2, Math.min(3.0, villainAggression));
+  if (aggrClamp !== 1.0) {
+    score = 0.5 + (score - 0.5) * aggrClamp;
+    score = Math.max(0.05, Math.min(0.95, score));
+    if (aggrClamp > 1.0) {
+      reasons.push(`Оппонент помечен как агрессивный (×${aggrClamp.toFixed(1)}) — сигналы блефа усилены`);
+    } else {
+      reasons.push(`Оппонент помечен как пассивный (×${aggrClamp.toFixed(1)}) — сигналы блефа ослаблены`);
+    }
+  }
 
   let label: BluffRead['label'];
   if (sizeRatio >= 1.2) label = 'Поляризовано';
@@ -553,6 +576,7 @@ export function getFullAdvice(
   players: number,
   position: string,
   simResult: SimulationResult,
+  villainAggression: number = 1.0,
 ): FullAdvice {
   const w = simResult.winProb;
   const isPreflop = boardCards.length === 0;
@@ -589,7 +613,7 @@ export function getFullAdvice(
   const street: 'flop' | 'turn' | 'river' =
     boardCards.length === 3 ? 'flop' : boardCards.length === 4 ? 'turn' : 'river';
   const bluffRead = !isPreflop
-    ? getBluffRead(betToCall, potSize, boardCards, players, street)
+    ? getBluffRead(betToCall, potSize, boardCards, players, street, villainAggression)
     : null;
 
   // ── MONSTER: shove ──────────────────────────────────────────────────────────

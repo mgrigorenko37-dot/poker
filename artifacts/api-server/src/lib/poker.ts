@@ -266,6 +266,27 @@ export function getRangeHandKeys(minEquity: number): string[] {
 // far better than dealing them literally any two cards.
 export const DEFAULT_VILLAIN_RANGE: string[] = getRangeHandKeys(50);
 
+// Total unblocked combos in a full deck: C(52,2) = 1326.
+// Pairs: 13 × C(4,2) = 78. Suited: 78 × 4 = 312. Offsuit: 78 × 12 = 936.
+const TOTAL_DECK_COMBOS = 1326;
+
+// Returns the number of card-pair combos a list of hand keys represents
+// (ignoring blockers — used only for approximate display %).
+export function countRangeCombos(handKeys: string[]): number {
+  let total = 0;
+  for (const key of handKeys) {
+    if (key.length === 2)       total += 6;  // pair: C(4,2)
+    else if (key.endsWith('s')) total += 4;  // suited: 4 suits
+    else                        total += 12; // offsuit: 4×3
+  }
+  return total;
+}
+
+// Percentage of all possible starting hands (by combo count) the range covers.
+export function rangeKeysToPct(handKeys: string[]): number {
+  return Math.round((countRangeCombos(handKeys) / TOTAL_DECK_COMBOS) * 100);
+}
+
 // Expands a list of hand keys into concrete (unblocked) card-pair combos.
 export function expandRangeToCombos(handKeys: string[], excluded: Card[] = []): [Card, Card][] {
   const excludedSet = new Set(excluded.map(c => `${c.rank}${c.suit}`));
@@ -360,7 +381,9 @@ export function runMonteCarloSim(
   // called/raised to get to this point.
   const rangeKeys = opponentRangeKeys ?? (boardCards.length > 0 ? DEFAULT_VILLAIN_RANGE : undefined);
   const rangeCombos = rangeKeys ? expandRangeToCombos(rangeKeys, [...holeCards, ...boardCards]) : null;
-  const villainRangePct = rangeKeys ? Math.round((rangeKeys.length / 169) * 100) : null;
+  // Count actual combos (pair=6, suited=4, offsuit=12), not hand-key categories.
+  // Dividing keys/169 was wrong: AKo counts 12 combos, AKs counts 4 — not equal weight.
+  const villainRangePct = rangeKeys ? rangeKeysToPct(rangeKeys) : null;
 
   let wins = 0;
   let losses = 0;

@@ -24,7 +24,8 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
-from card_utils import detect_suit, refine_red_suit
+from card_utils import detect_suit, refine_red_suit, configure_suits
+from table_detector import get_table_state
 
 try:
     import easyocr
@@ -135,6 +136,9 @@ def main():
 
     os.makedirs(TEMPLATES_DIR, exist_ok=True)
 
+    # Загружаем конфиг мастей (если задан suit_hue_ranges для нестандартного рума)
+    configure_suits(cfg)
+
     print("\n=== Сбор шаблонов карт ===")
     print("Инициализация EasyOCR (может занять ~15 сек)...")
     reader = easyocr.Reader(["en"], gpu=False, verbose=False)
@@ -182,7 +186,17 @@ def main():
             continue
 
         fh, fw = frame.shape[:2]
-        ch = max(10, int(fh * card_h_pct / 100))
+
+        # Используем ту же формулу размера карты что и poker_scanner.py:
+        # если авто-детект нашёл стол — от высоты bbox (bh * 0.095),
+        # иначе — фолбек на card_height_pct от высоты экрана.
+        # Это гарантирует что шаблоны и сканер режут карту одинаково.
+        regions_dict, dbg = get_table_state(frame)
+        if regions_dict is not None and dbg.get("bbox"):
+            _, _, _, bh = dbg["bbox"]
+            ch = max(10, int(bh * 0.095))
+        else:
+            ch = max(10, int(fh * card_h_pct / 100))
         cw = max(8,  int(ch * 0.72))
 
         # ── Каждый регион ───────────────────────────────────────────────────
