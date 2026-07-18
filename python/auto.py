@@ -192,7 +192,7 @@ def _check_server(cfg: dict) -> None:
     print(f"  URL в config.json: {base}")
     print()
     print("  Если URL старый — замени server_url в config.json на:")
-    print("  https://7e34f005-498b-4464-808c-20c71e065baa-00-2d02wszzxhyvv.picard.replit.dev/api/python/scan")
+    print(f"  {base}/api/python/scan")
     print()
     print("  Если URL правильный — открой Replit и нажми Run (▶)")
     print()
