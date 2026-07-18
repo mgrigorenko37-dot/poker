@@ -115,6 +115,8 @@ def ensure_config(profile: Optional[dict]) -> dict:
         for k in list(cfg.keys()):
             if k.startswith("_"):
                 cfg.pop(k)
+        # Сохраняем сразу — poker_scanner.load_config() читает с диска
+        _save_config(cfg)
     else:
         cfg = {
             "server_url": "",
@@ -162,7 +164,43 @@ def _save_config(cfg: dict) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  3. Telegram — авто-привязка без Enter
+#  3. Проверка доступности сервера
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _check_server(cfg: dict) -> None:
+    """Проверяет что Replit-сервер доступен. Если нет — даёт инструкцию."""
+    url  = cfg.get("server_url", "")
+    base = url.split("/api/")[0] if "/api/" in url else url.rstrip("/")
+    if not base:
+        return
+
+    print("🌐 Проверяю сервер...", end=" ", flush=True)
+    try:
+        r = requests.get(f"{base}/api/healthz", timeout=5)
+        if r.status_code == 200:
+            print("доступен ✅")
+            return
+    except Exception:
+        pass
+
+    print("недоступен ⚠️")
+    print()
+    print(DIVIDER)
+    print("  Сервер Replit не отвечает!")
+    print(DIVIDER)
+    print()
+    print("  Чтобы запустить сервер:")
+    print("  1. Открой Replit в браузере")
+    print("  2. Нажми кнопку Run (▶) — сервер запустится")
+    print("  3. Убедись что в Preview видно приложение")
+    print()
+    print("  Сканер продолжит работу, но советы в Telegram")
+    print("  не придут пока сервер не запущен.")
+    print()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  4. Telegram — авто-привязка без Enter
 # ══════════════════════════════════════════════════════════════════════════════
 
 def auto_link_telegram(cfg: dict) -> None:
@@ -348,7 +386,10 @@ def main() -> None:
     # ── 3. Конфиг ─────────────────────────────────────────────────────────
     cfg = ensure_config(profile)
 
-    # ── 4. Telegram (без Enter) ───────────────────────────────────────────
+    # ── 4. Проверяем доступность сервера ─────────────────────────────────
+    _check_server(cfg)
+
+    # ── 5. Telegram (без Enter) ───────────────────────────────────────────
     auto_link_telegram(cfg)
 
     # ── 5. Фоновый сбор шаблонов ─────────────────────────────────────────
