@@ -143,8 +143,11 @@ def ensure_config(profile: Optional[dict]) -> dict:
         _save_config(cfg)
         print("  ✅ Сохранено\n")
 
-    # ── Пресет — если регионы пустые ─────────────────────────────────────
-    if profile and not cfg.get("regions"):
+    # ── Пресет — если регионы пустые ИЛИ сменился профиль игры ──────────
+    active = cfg.get("active_preset", "")
+    preset_changed = profile and (profile["preset"] != active)
+    no_regions     = not cfg.get("regions")
+    if profile and (no_regions or preset_changed):
         preset_path = os.path.join(PRESETS_DIR, profile["preset"])
         if os.path.exists(preset_path):
             with open(preset_path, encoding="utf-8") as f:
@@ -152,8 +155,12 @@ def ensure_config(profile: Optional[dict]) -> dict:
             for key in ("regions", "money_regions", "card_height_pct"):
                 if key in preset:
                     cfg[key] = preset[key]
+            cfg["active_preset"] = profile["preset"]
             _save_config(cfg)
-            print(f"  📦 Пресет применён: {profile['name']}")
+            if preset_changed and not no_regions:
+                print(f"  🔄 Профиль сменился → пресет обновлён: {profile['name']}")
+            else:
+                print(f"  📦 Пресет применён: {profile['name']}")
 
     return cfg
 

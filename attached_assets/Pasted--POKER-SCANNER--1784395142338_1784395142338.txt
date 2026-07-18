@@ -1,0 +1,97 @@
+─────────────────────────────────────────
+   ♠ POKER SCANNER — главное меню
+──────────────────────────────────────────
+  [1]  ⚡  Авто-режим (запустить всё само)
+  [2]  🚀  Запустить сканер вручную
+  [3]  🎯  Калибровка (карты + деньги)
+  [4]  🃏  Собрать шаблоны карт
+  [5]  📦  Загрузить пресет
+  [6]  📱  Привязать Telegram
+  [7]  🔍  Отладка детектора стола
+  [0]  Выход
+──────────────────────────────────────────
+  Введи номер: 1
+
+  → Запускаю: auto.py
+──────────────────────────────────────────
+
+
+────────────────────────────────────────────────────
+  ♠  POKER SCANNER — авто-режим
+────────────────────────────────────────────────────
+
+🔍 Ищу окно покер-рума... найдено: Ton Poker ✅
+🎨 Детект стола: настроен под Ton Poker
+🌐 Проверяю сервер... доступен ✅
+📱 Telegram: уже подключён ✅
+🃏 Шаблоны: 0/52 — запускаю сборку в фоне (просто играй)
+
+🚀 Запускаю сканер...
+
+📱 Telegram: проверка пропущена (уже выполнена auto.py)
+📋 Регионы: config.json загружен (запасной вариант если авто не сработает)
+🔍 Авто-детект стола: включён (table_detector)
+🃏 Шаблоны не найдены → только EasyOCR
+   Для точности 99.9% запусти: python collect_templates.py
+🎯 Позиция: фиксировано BTN (запусти calibrate.py Фазу 4)
+Инициализация EasyOCR (fallback, первый запуск ~10 сек)...
+
+Сканирование запущено (5 FPS). Ctrl+C для остановки.
+
+⏳ Открой покер-рум — скрипт найдёт стол автоматически.
+
+⚠️  Стол не обнаружен — использую ручные регионы из config.json
+C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\torch\ao\nn\quantized\dynamic\modules\rnn.py:162: UserWarning: torch.quantize_per_tensor, torch.quantize_per_channel and other quantized tensor creation functions that produce tensors with dtype torch.quint8, torch.qint8, and torch.qint32 are deprecated and will be removed in a future PyTorch release. Please see https://github.com/pytorch/pytorch/issues/184982 for more information. (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\aten\src\ATen\quantized\Quantizer.cpp:116.)
+  w_ih = torch.quantize_per_tensor(
+C:\Users\Макс\OneDrive\Desktop\python\auto.py:300: DeprecationWarning: mss.mss is deprecated and will be removed in a future release; use mss.MSS instead
+  with mss.mss() as sct:
+EasyOCR готов.
+
+C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\torch\utils\data\dataloader.py:759: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.
+  super().__init__(loader)
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 0.92)
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 0.86)
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 0.86)
+
+  💾 [фон] Сохранён шаблон: Ac  (уверенность 1.00)
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 0.86)
+
+  💾 [фон] Сохранён шаблон: Ac  (уверенность 0.91)
+
+  💾 [фон] Сохранён шаблон: Ac  (уверенность 1.00)
+
+  💾 [фон] Сохранён шаблон: 6c  (уверенность 0.99)
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 1.00)
+  → RAISE  Win 18%  [BTN / 6p]  |  4c Kc |   банк=0
+  → FOLD  Win 14%  [BTN / 6p]  |  3c 9c |   банк=0
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 0.96)
+
+  💾 [фон] Сохранён шаблон: 6c  (уверенность 0.97)
+
+  💾 [фон] Сохранён шаблон: 8c  (уверенность 0.79)
+
+  💾 [фон] Сохранён шаблон: 5c  (уверенность 0.90)
+
+  💾 [фон] Сохранён шаблон: 9c  (уверенность 0.96)
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 0.81)
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 0.86)
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 0.86)
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 0.86)
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 0.86)
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 0.86)
+
+  💾 [фон] Сохранён шаблон: 6c  (уверенность 1.00)
+
+  💾 [фон] Сохранён шаблон: Tc  (уверенность 0.86)
