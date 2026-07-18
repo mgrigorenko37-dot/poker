@@ -17,6 +17,7 @@ MENU = [
     ("📦  Загрузить пресет",                   "load_preset.py"),
     ("📱  Привязать Telegram",                  "link_telegram.py"),
     ("🔍  Отладка детектора стола",            "debug_detector.py"),
+    ("📐  Выбрать область стола вручную",      "select_region.py"),
 ]
 
 DIVIDER = "─" * 42

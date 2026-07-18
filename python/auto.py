@@ -171,6 +171,83 @@ def _save_config(cfg: dict) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  3.5. Ручная область стола
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _setup_manual_bbox(cfg: dict) -> None:
+    """
+    Если в config.json есть manual_table_bbox — загружает его в table_detector,
+    HSV-поиск при этом отключается.
+
+    Если bbox не сохранён — предлагает выделить стол вручную прямо сейчас
+    (5-секундный таймаут, по умолчанию «нет» → авто-детект).
+    """
+    import table_detector as _td
+
+    saved = cfg.get("manual_table_bbox")
+
+    if saved:
+        # Загружаем сохранённую область
+        bbox = (saved["x"], saved["y"], saved["w"], saved["h"])
+        _td.set_manual_bbox(bbox)
+        print(
+            f"📐 Стол: ручная область ({bbox[0]},{bbox[1]}) "
+            f"{bbox[2]}×{bbox[3]} px  "
+            f"[для смены запусти пункт 8 в меню]"
+        )
+        return
+
+    # Bbox не сохранён — предложить выделить вручную
+    print()
+    print("📐 Выделить стол вручную? [y/N]: ", end="", flush=True)
+
+    ans_holder: list[str] = [""]
+
+    def _read_input() -> None:
+        try:
+            ans_holder[0] = input().strip().lower()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_read_input, daemon=True)
+    t.start()
+    t.join(timeout=5)
+
+    if ans_holder[0] != "y":
+        print("(авто-детект HSV)")
+        return
+
+    # Пользователь согласился — запускаем интерактивный выбор
+    try:
+        from select_region import select_region, capture_screen as _cap
+    except ImportError:
+        print("  ⚠️  select_region.py не найден — используется авто-детект")
+        return
+
+    print()
+    print("  Разверни игру на весь экран, потом нажми Enter...")
+    try:
+        input()
+    except EOFError:
+        pass
+
+    frame = _cap()
+    print(f"  Захвачен экран: {frame.shape[1]}×{frame.shape[0]} px")
+    print()
+
+    bbox = select_region(frame)
+    if bbox is None:
+        print("  — Отменено, используется авто-детект")
+        return
+
+    x, y, w, h = bbox
+    cfg["manual_table_bbox"] = {"x": x, "y": y, "w": w, "h": h}
+    _save_config(cfg)
+    _td.set_manual_bbox(bbox)
+    print(f"  ✅ Сохранено и активировано: ({x},{y}) {w}×{h} px")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  3. Проверка доступности сервера
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -394,6 +471,9 @@ def main() -> None:
 
     # ── 3. Конфиг ─────────────────────────────────────────────────────────
     cfg = ensure_config(profile)
+
+    # ── 3.5 Ручная область стола ──────────────────────────────────────────
+    _setup_manual_bbox(cfg)
 
     # ── 4. Проверяем доступность сервера ─────────────────────────────────
     _check_server(cfg)

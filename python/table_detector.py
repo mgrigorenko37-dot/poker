@@ -46,6 +46,11 @@ _MIN_TABLE_AREA_FRAC = 0.05
 _EMA_ALPHA = 0.7
 _ema_bbox: Optional[np.ndarray] = None   # [x, y, w, h] float
 
+# ── Ручной bbox (задаётся через set_manual_bbox) ──────────────────────────────
+# Когда задан — find_table() возвращает его напрямую, минуя HSV-поиск.
+# None = авто-детект (поведение по умолчанию).
+_manual_bbox: Optional[tuple[int, int, int, int]] = None
+
 
 def _update_ema(new_bbox: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
     global _ema_bbox
@@ -64,13 +69,35 @@ _miss_streak = 0          # сколько подряд тиков стол не
 _MISS_RESET = 8           # после скольки промахов сбрасываем кэш
 
 
+def set_manual_bbox(bbox: Optional[tuple[int, int, int, int]]) -> None:
+    """
+    Задаёт фиксированный bbox стола в пикселях (x, y, w, h).
+
+    Когда задан — find_table() возвращает его напрямую, минуя HSV-поиск.
+    Передай None чтобы вернуться к авто-детекту.
+
+    Пример:
+        set_manual_bbox((120, 40, 900, 520))   # стол с (120,40), 900×520 px
+        set_manual_bbox(None)                   # снова авто-детект
+    """
+    global _manual_bbox, _cached_bbox, _ema_bbox
+    _manual_bbox = bbox
+    _cached_bbox = bbox
+    _ema_bbox    = np.array(bbox, dtype=float) if bbox is not None else None
+
+
 def find_table(frame: np.ndarray) -> Optional[tuple[int, int, int, int]]:
     """
     Ищет зелёный стол на фрейме.
 
-    Возвращает (x, y, w, h) bounding box с EMA-сглаживанием,
-    или None если стол не найден (окно свёрнуто / перекрыто).
+    Если задан ручной bbox через set_manual_bbox() — возвращает его сразу,
+    без HSV-поиска. Иначе — стандартный HSV-детект с EMA-сглаживанием.
+    Возвращает None если стол не найден (окно свёрнуто / перекрыто).
     """
+    # ── Ручной bbox — пропускаем HSV полностью ───────────────────────────────
+    if _manual_bbox is not None:
+        return _manual_bbox
+
     global _cached_bbox, _miss_streak, _ema_bbox  # _ema_bbox нужен для сброса
 
     hsv  = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
