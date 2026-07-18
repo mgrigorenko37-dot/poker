@@ -451,7 +451,15 @@ def send_scan(cfg, hole, board, pot, bet, players: int, position: str,
     url = cfg["server_url"]
     try:
         r    = requests.post(url, json=payload, timeout=4)
+        if not r.text.strip():
+            print(f"  ⚠️  Сервер вернул пустой ответ (HTTP {r.status_code})")
+            print(f"       URL: {url[:80]}")
+            print(f"       Проверь server_url в config.json — возможно старый адрес")
+            return
         data = r.json()
+        if "error" in data and "action" not in data:
+            print(f"  ⚠️  Сервер: {data['error']}")
+            return
         action = data.get("action", "?")
         equity = round((data.get("equity") or 0) * 100)
         pot_s  = f"  банк={pot:.0f}" if pot else ""
@@ -459,9 +467,11 @@ def send_scan(cfg, hole, board, pot, bet, players: int, position: str,
         agg_s  = f"  agg={aggressor_pos}" if aggressor_pos else ""
         print(f"  → {action}  Win {equity}%  [{position} / {players}p]{agg_s}  |  {' '.join(hole)} | {' '.join(board)}{pot_s}{bet_s}")
     except requests.exceptions.ConnectionError:
-        print(f"  ⚠️  Сервер недоступен ({url[:50]}…)")
+        print(f"  ⚠️  Сервер недоступен ({url[:60]}…)")
     except Exception as e:
         print(f"  ⚠️  Ошибка: {e}")
+        if 'r' in dir() and hasattr(r, 'text'):
+            print(f"       HTTP {r.status_code}: {r.text[:150]}")
 
 # ── Автоподключение Telegram ──────────────────────────────────────────────────
 
