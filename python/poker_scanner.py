@@ -1,21 +1,22 @@
 """
-poker_scanner.py — локальный Python-агент для World Poker Club и других браузерных румов.
+poker_scanner.py — локальный Python-агент для Ton Poker и других браузерных румов.
 
 Что делает:
   1. Захватывает экран через mss (~60 FPS, почти 0% CPU)
-  2. Распознаёт карты через template matching (cv2) если шаблоны собраны,
+  2. Автоматически находит зелёный стол через HSV-детект (table_detector.py).
+     Калибровка НЕ нужна — скрипт запускается сразу.
+  3. Распознаёт карты через template matching (cv2) если шаблоны собраны,
      иначе падает на EasyOCR (автоматически, без ручного переключения)
-  3. Читает банк и ставку/колл через OCR откалиброванных прямоугольников
-  4. Шлёт JSON на /api/python/scan → GTO расчёт → Telegram
+  4. Читает банк и ставку/колл через OCR (зоны вычисляются из размера стола)
+  5. Шлёт JSON на /api/python/scan → GTO расчёт → Telegram
 
-Запуск:
+Запуск (без калибровки):
     python poker_scanner.py
 
-Порядок подготовки:
-  1. pip install -r requirements.txt
-  2. python calibrate.py        ← карты + деньги
-  3. python collect_templates.py   ← собрать 52 шаблона (играя как обычно)
-  4. python poker_scanner.py
+Если авто-детект не работает (нестандартный клиент):
+  1. python calibrate.py        ← ручная калибровка как запасной вариант
+  2. python collect_templates.py
+  3. python poker_scanner.py
 """
 
 import json
@@ -32,6 +33,7 @@ import numpy as np
 import requests
 
 from card_utils import detect_suit, refine_red_suit, extract_card_region, looks_empty
+from table_detector import get_table_state
 
 # ── EasyOCR — fallback когда нет шаблона ────────────────────────────────────
 _ocr_reader = None
@@ -375,15 +377,25 @@ def send_scan(cfg, hole, board, pot, bet, players: int, position: str) -> None:
 def main():
     global _tmpl_hits, _ocr_hits, _misses
 
-    cfg     = load_config()
-    regions = cfg.get("regions", [])
-    if len(regions) < 5:
-        print("❌ Меньше 5 регионов — запусти: python calibrate.py")
-        sys.exit(1)
+    cfg = load_config()
     url = cfg.get("server_url", "")
     if "ТВОЙ_ДОМЕН" in url or not url:
         print("❌ Укажи server_url в config.json")
         sys.exit(1)
+
+    # ── Режим регионов ────────────────────────────────────────────────────────
+    # Приоритет:
+    #   1. Авто-детект стола (table_detector) — работает без calibrate.py
+    #   2. Ручные регионы из config.json       — запасной вариант
+    manual_regions  = cfg.get("regions", [])
+    use_auto_detect = True   # всегда пробуем авто; фолбек если стол не найден
+
+    if len(manual_regions) >= 5:
+        print("📋 Регионы: config.json загружен (запасной вариант если авто не сработает)")
+    else:
+        print("📋 Регионы: только авто-детект (config.json не откалиброван)")
+
+    print("🔍 Авто-детект стола: включён (table_detector)")
 
     # ── Шаблоны ──────────────────────────────────────────────────────────────
     _templates.update(load_templates())
@@ -391,57 +403,38 @@ def main():
     if n_tmpl > 0:
         print(f"🃏 Template matching: загружено {n_tmpl}/52 шаблонов")
         if n_tmpl < 52:
-            missing = 52 - n_tmpl
-            print(f"   (не хватает {missing} карт — fallback на EasyOCR для них)")
+            print(f"   (не хватает {52 - n_tmpl} карт — fallback на EasyOCR для них)")
     else:
         print("🃏 Шаблоны не найдены → только EasyOCR")
         print("   Для точности 99.9% запусти: python collect_templates.py")
 
-    # ── Деньги ───────────────────────────────────────────────────────────────
-    money_regions: dict = cfg.get("money_regions", {})
-    has_pot = "pot" in money_regions
-    has_bet = "bet" in money_regions
-    if has_pot: print("💰 Банк: OCR")
-    if has_bet: print("💰 Колл: OCR")
-    if not has_pot and not has_bet:
-        print("💰 Деньги не откалиброваны — запусти calibrate.py (Фаза 2)")
-
-    # ── Места оппонентов ─────────────────────────────────────────────────────
-    seat_regions: list = cfg.get("seat_regions", [])
+    # ── Ручные деньги / места (из config.json если есть) ─────────────────────
+    manual_money:  dict = cfg.get("money_regions", {})
+    manual_seats:  list = cfg.get("seat_regions", [])
     players_fallback: int = cfg.get("players", 6)
-    if seat_regions:
-        print(f"👥 Игроки: авто-детект по {len(seat_regions)} местам (+ герой)")
-    else:
-        print(f"👥 Игроки: фиксировано {players_fallback} (настрой Фазу 3 в calibrate.py)")
 
-    # ── Кнопка дилера / позиция ───────────────────────────────────────────────
-    dealer_tmpl = load_dealer_template()
-    position_fallback: str = cfg.get("position", "BTN")
-    # Позиция героя: центр между двумя своими картами (regions[0] и regions[1])
-    hero_cx = (regions[0]["cx"] + regions[1]["cx"]) / 2
-    hero_cy = (regions[0]["cy"] + regions[1]["cy"]) / 2
-    total_seats = len(seat_regions) + 1   # оппоненты + герой
-    _last_position: str = position_fallback  # кэш — не меняем позицию пока D не найдена
+    # ── Кнопка дилера ────────────────────────────────────────────────────────
+    dealer_tmpl       = load_dealer_template()
+    position_fallback = cfg.get("position", "BTN")
+    _last_position    = position_fallback
+
     if dealer_tmpl is not None:
-        print(f"🎯 Позиция: авто-детект (шаблон D загружен, {total_seats} мест за столом)")
+        print("🎯 Позиция: авто-детект по кнопке D")
     else:
-        print(f"🎯 Позиция: фиксировано {position_fallback} (настрой Фазу 4 в calibrate.py)")
+        print(f"🎯 Позиция: фиксировано {position_fallback} (запусти calibrate.py Фазу 4)")
 
-    hole_regs  = regions[:2]
-    board_regs = regions[2:]
+    # ── OCR прогрев ───────────────────────────────────────────────────────────
+    # Всегда прогреваем: банк читаем через OCR (из авто-зон стола)
+    threading.Thread(target=get_ocr, daemon=True).start()
+
     interval   = 1.0 / SCAN_FPS
     card_h_pct = cfg.get("card_height_pct", 9)
 
-    # Прогрев OCR в фоне:
-    # — если шаблонов не хватает (нужен для карт)
-    # — если настроены денежные регионы (нужен для банка/ставки)
-    needs_ocr = n_tmpl < 52 or has_pot or has_bet
-    if needs_ocr:
-        threading.Thread(target=get_ocr, daemon=True).start()
-
     print(f"\nСканирование запущено ({SCAN_FPS} FPS). Ctrl+C для остановки.\n")
+    print("⏳ Открой Ton Poker — скрипт найдёт стол автоматически.\n")
 
-    stat_tick = 0
+    stat_tick  = 0
+    table_miss = 0          # счётчик тиков без стола для вывода статуса
     while True:
         t0 = time.perf_counter()
 
@@ -451,8 +444,44 @@ def main():
             continue
 
         fh, fw = frame.shape[:2]
-        ch = max(10, int(fh * card_h_pct / 100))
-        cw = max(8,  int(ch * 0.72))
+
+        # ── Авто-детект стола ─────────────────────────────────────────────────
+        regions_dict, dbg = get_table_state(frame)
+
+        if regions_dict is not None:
+            # Стол найден — используем динамические регионы
+            regions      = regions_dict["regions"]
+            money_regions = regions_dict["money_regions"]
+            seat_regions  = regions_dict["seat_regions"]
+            if table_miss > 0:
+                print(f"✅ Стол найден ({dbg['layout']})")
+                table_miss = 0
+        elif len(manual_regions) >= 5:
+            # Стол не виден, но есть ручные регионы — фолбек
+            regions       = manual_regions
+            money_regions = manual_money
+            seat_regions  = manual_seats
+            table_miss   += 1
+            if table_miss == 1:
+                print("⚠️  Стол не обнаружен — использую ручные регионы из config.json")
+        else:
+            # Ни стол не найден, ни ручных регионов нет — ждём
+            table_miss += 1
+            if table_miss % 25 == 1:   # раз в ~5 сек
+                print("⏳ Жду стол... (открой Ton Poker на экране)")
+            time.sleep(interval)
+            continue
+
+        # ── Размер карты (из высоты стола если авто, иначе из конфига) ───────
+        if regions_dict is not None and dbg.get("bbox"):
+            _, _, _, bh = dbg["bbox"]
+            ch = max(10, int(bh * 0.095))   # ~9.5% высоты стола
+        else:
+            ch = max(10, int(fh * card_h_pct / 100))
+        cw = max(8, int(ch * 0.72))
+
+        hole_regs  = regions[:2]
+        board_regs = regions[2:]
 
         # ── Карты ──────────────────────────────────────────────────────────
         hole: list[str] = []
@@ -480,26 +509,31 @@ def main():
         players  = detected if detected is not None else players_fallback
 
         # ── Позиция дилера ─────────────────────────────────────────────────
+        hero_cx = (regions[0]["cx"] + regions[1]["cx"]) / 2
+        hero_cy = (regions[0]["cy"] + regions[1]["cy"]) / 2
+        total_seats = len(seat_regions) + 1
         if dealer_tmpl is not None:
             dealer_pos = find_dealer_button(frame, dealer_tmpl)
             if dealer_pos is not None:
-                d_seat    = nearest_seat(dealer_pos[0], dealer_pos[1],
-                                         hero_cx, hero_cy, seat_regions)
+                d_seat = nearest_seat(dealer_pos[0], dealer_pos[1],
+                                      hero_cx, hero_cy, seat_regions)
                 _last_position = compute_position(0, d_seat, total_seats)
-        position = _last_position   # используем последнюю найденную (кнопка иногда перекрыта)
+        position = _last_position
 
         # ── Деньги ─────────────────────────────────────────────────────────
-        pot: Optional[float] = ocr_number(frame, money_regions["pot"]) if has_pot else None
-        bet: Optional[float] = ocr_number(frame, money_regions["bet"]) if has_bet else None
+        pot: Optional[float] = ocr_number(frame, money_regions["pot"]) \
+            if "pot" in money_regions else None
+        bet: Optional[float] = ocr_number(frame, money_regions.get("bet", {})) \
+            if "bet" in money_regions else None
 
         send_scan(cfg, hole, board, pot, bet, players, position)
 
         # ── Статистика раз в 60 тиков (~12 сек) ────────────────────────────
         stat_tick += 1
         if stat_tick % 60 == 0 and (_tmpl_hits + _ocr_hits + _misses) > 0:
-            total = _tmpl_hits + _ocr_hits + _misses
+            total_r = _tmpl_hits + _ocr_hits + _misses
             print(f"  [stat] tmpl={_tmpl_hits} ocr={_ocr_hits} miss={_misses}"
-                  f"  tmpl-rate={_tmpl_hits/total*100:.0f}%")
+                  f"  tmpl-rate={_tmpl_hits/total_r*100:.0f}%")
 
         time.sleep(max(0, interval - (time.perf_counter() - t0)))
 
