@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "Poker Advisor"
+version = "1.0.0"
+id = "artifacts/poker-advisor"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20319
+
+[services.development]
+run = "pnpm --filter @workspace/poker-advisor run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/poker-advisor", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/poker-advisor/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20319"
+BASE_PATH = "/"
