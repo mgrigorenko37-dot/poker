@@ -258,6 +258,26 @@ def ocr_number(frame: np.ndarray, region: dict) -> Optional[float]:
             best_conf = conf; best_val = val
     return best_val
 
+# ── Активные игроки ───────────────────────────────────────────────────────────
+def count_active_players(frame: np.ndarray, seat_regions: list,
+                         cw: int, ch: int) -> int:
+    """
+    Считает число активных игроков в текущей раздаче.
+    Проверяет каждую seat_region через looks_empty():
+      — если зона НЕ пустая → у игрока есть карты рубашкой → он активен.
+    Возвращает число активных оппонентов + 1 (герой всегда активен).
+    Если seat_regions не настроены — возвращает None (нет данных).
+    """
+    if not seat_regions:
+        return None
+    active = 0
+    for r in seat_regions:
+        crop = extract_card_region(frame, r["cx"], r["cy"], cw, ch)
+        if not looks_empty(crop):
+            active += 1
+    return active + 1   # +1 за героя
+
+
 # ── Дубли ────────────────────────────────────────────────────────────────────
 def has_duplicates(cards: list) -> bool:
     return len(cards) != len(set(cards))
@@ -265,14 +285,14 @@ def has_duplicates(cards: list) -> bool:
 # ── Отправка ─────────────────────────────────────────────────────────────────
 _last_key = ""
 
-def send_scan(cfg, hole, board, pot, bet) -> None:
+def send_scan(cfg, hole, board, pot, bet, players: int) -> None:
     global _last_key
     payload = {
         "holeCards":  hole,
         "boardCards": board,
         "potSize":    round(pot, 2) if pot is not None else 0,
         "betToCall":  round(bet, 2) if bet is not None else 0,
-        "players":    cfg.get("players", 6),
+        "players":    players,
         "position":   cfg.get("position", "BTN"),
     }
     key = hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -327,6 +347,14 @@ def main():
     if not has_pot and not has_bet:
         print("💰 Деньги не откалиброваны — запусти calibrate.py (Фаза 2)")
 
+    # ── Места оппонентов ─────────────────────────────────────────────────────
+    seat_regions: list = cfg.get("seat_regions", [])
+    players_fallback: int = cfg.get("players", 6)
+    if seat_regions:
+        print(f"👥 Игроки: авто-детект по {len(seat_regions)} местам (+ герой)")
+    else:
+        print(f"👥 Игроки: фиксировано {players_fallback} (настрой Фазу 3 в calibrate.py)")
+
     hole_regs  = regions[:2]
     board_regs = regions[2:]
     interval   = 1.0 / SCAN_FPS
@@ -375,11 +403,15 @@ def main():
             time.sleep(max(0, interval - (time.perf_counter() - t0)))
             continue
 
+        # ── Активные игроки ────────────────────────────────────────────────
+        detected = count_active_players(frame, seat_regions, cw, ch)
+        players  = detected if detected is not None else players_fallback
+
         # ── Деньги ─────────────────────────────────────────────────────────
         pot: Optional[float] = ocr_number(frame, money_regions["pot"]) if has_pot else None
         bet: Optional[float] = ocr_number(frame, money_regions["bet"]) if has_bet else None
 
-        send_scan(cfg, hole, board, pot, bet)
+        send_scan(cfg, hole, board, pot, bet, players)
 
         # ── Статистика раз в 60 тиков (~12 сек) ────────────────────────────
         stat_tick += 1

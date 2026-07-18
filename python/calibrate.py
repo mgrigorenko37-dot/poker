@@ -240,6 +240,88 @@ def run_money_phase() -> dict:
             return {}
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  ФАЗА 3 — места оппонентов (клики по зоне карт рубашкой)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Кликай по центру того места, где у оппонента лежат карты рубашкой.
+# Сканер будет проверять эти зоны через looks_empty() — если там что-то есть
+# (карты рубашкой), игрок считается активным в раздаче.
+SEAT_STEPS = [
+    ("Seat1", "Оппонент 1 — кликни по центру его карт рубашкой"),
+    ("Seat2", "Оппонент 2  [Q = пропустить]"),
+    ("Seat3", "Оппонент 3  [Q = пропустить]"),
+    ("Seat4", "Оппонент 4  [Q = пропустить]"),
+    ("Seat5", "Оппонент 5  [Q = пропустить]"),
+    ("Seat6", "Оппонент 6  [Q = пропустить]"),
+    ("Seat7", "Оппонент 7  [Q = пропустить]"),
+    ("Seat8", "Оппонент 8  [Q = пропустить]"),
+]
+
+_seat_points: list[dict] = []
+_seat_step   = 0
+
+def _seat_mouse(event, x, y, flags, param):
+    global _seat_step
+    if event == cv2.EVENT_LBUTTONDOWN and _seat_step < len(SEAT_STEPS):
+        label, desc = SEAT_STEPS[_seat_step]
+        h, w = _frame.shape[:2]
+        cx, cy = x / w, y / h
+        _seat_points.append({"label": label, "cx": round(cx, 4), "cy": round(cy, 4)})
+        print(f"  ✓ {label}: ({cx:.4f}, {cy:.4f})  ← {desc}")
+        _seat_step += 1
+        _draw_seat_overlay()
+
+def _draw_seat_overlay():
+    vis = _frame.copy()
+    h, w = vis.shape[:2]
+    for p in _seat_points:
+        px, py = int(p["cx"] * w), int(p["cy"] * h)
+        cv2.circle(vis, (px, py), 12, (255, 165, 0), 2)
+        cv2.putText(vis, p["label"], (px + 14, py - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 165, 0), 1)
+    if _seat_step < len(SEAT_STEPS):
+        msg = f"Кликни: {SEAT_STEPS[_seat_step][1]}"
+        cv2.putText(vis, msg, (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 220, 0), 2)
+    else:
+        cv2.putText(vis, f"Все {len(_seat_points)} мест готовы!  Нажми S для сохранения",
+                    (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 80), 2)
+    cv2.imshow(WIN_NAME, vis)
+
+def run_seat_phase() -> list[dict]:
+    global _seat_step
+    _seat_points.clear()
+    _seat_step = 0
+
+    cv2.setMouseCallback(WIN_NAME, _seat_mouse)
+    _draw_seat_overlay()
+
+    print("\n▶ Фаза 3 — МЕСТА ОППОНЕНТОВ")
+    print("  Кликай по ЦЕНТРУ зоны карт рубашкой каждого оппонента.")
+    print("  Q = пропустить место,  R = сброс,  S = сохранить и выйти\n")
+
+    while True:
+        key = cv2.waitKey(50) & 0xFF
+        if key == ord('q') and _seat_step >= 1:      # минимум 1, остальные можно пропустить
+            label = SEAT_STEPS[_seat_step][0]
+            print(f"  — {label}: пропущен")
+            _seat_step += 1
+            if _seat_step >= len(SEAT_STEPS):
+                _draw_seat_overlay()
+                break
+            _draw_seat_overlay()
+        elif key == ord('r'):
+            _seat_points.clear()
+            _seat_step = 0
+            _draw_seat_overlay()
+            print("  ↺ Сброс мест")
+        elif key == ord('s'):
+            if len(_seat_points) < 1:
+                print("  ⚠️  Кликни хотя бы на 1 место оппонента")
+            else:
+                return list(_seat_points)
+        elif key == 27:
+            return list(_seat_points)   # сохраняем что успели
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 def main():
@@ -271,6 +353,17 @@ def main():
 
     money = run_money_phase()
     cfg["money_regions"] = money
+
+    # ── Фаза 3: места оппонентов ───────────────────────────────────────────────
+    print("\nОбнови скриншот перед калибровкой мест (Enter) или пропусти (пробел).")
+    print("Совет: сделай это когда за столом сидят все игроки и у всех есть карты.")
+    key2 = cv2.waitKey(3000) & 0xFF
+    if key2 == 13 or key2 == 255:
+        _frame = capture_screen()
+        print("Скриншот обновлён.")
+
+    seats = run_seat_phase()
+    cfg["seat_regions"] = seats
 
     cv2.destroyAllWindows()
     save_config(cfg)
