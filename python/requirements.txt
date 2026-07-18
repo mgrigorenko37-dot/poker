@@ -1,0 +1,6 @@
+mss>=9.0.1
+opencv-python>=4.9.0
+easyocr>=1.7.1
+numpy>=1.26.0
+requests>=2.31.0
+pywin32>=306; sys_platform == "win32"

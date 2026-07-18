@@ -1,0 +1,22 @@
+{
+  "_comment": "Скопируй в config.json и заполни своими значениями",
+
+  "server_url": "https://6b3f8f8b-6941-492b-abb7-2ec8b8f16584-00-1vko4ywx3shji.spock.replit.dev/api/python/scan",
+
+  "window_title": "World Poker Club",
+
+  "position": "BTN",
+  "players": 6,
+
+  "card_height_pct": 9,
+
+  "regions": [
+    { "label": "Hole1", "cx": 0.44, "cy": 0.82 },
+    { "label": "Hole2", "cx": 0.56, "cy": 0.82 },
+    { "label": "Board1", "cx": 0.30, "cy": 0.48 },
+    { "label": "Board2", "cx": 0.40, "cy": 0.48 },
+    { "label": "Board3", "cx": 0.50, "cy": 0.48 },
+    { "label": "Board4", "cx": 0.60, "cy": 0.48 },
+    { "label": "Board5", "cx": 0.70, "cy": 0.48 }
+  ]
+}
