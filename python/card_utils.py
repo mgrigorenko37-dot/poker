@@ -25,9 +25,70 @@ card_utils.py — общие утилиты распознавания карт.
   Если секция отсутствует — используются встроенные значения.
 """
 
+from __future__ import annotations
+
+import os
 from typing import Optional
 import cv2
 import numpy as np
+
+# ── Шаблоны мастей (загружаются один раз) ────────────────────────────────────
+_SUITS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "templates", "suits")
+_suit_templates: dict[str, np.ndarray] = {}   # suit → grayscale template
+_suit_templates_loaded = False
+
+
+def _load_suit_templates() -> None:
+    global _suit_templates_loaded
+    _suit_templates_loaded = True
+    for s in ("h", "d", "c", "s"):
+        p = os.path.join(_SUITS_DIR, f"suit_{s}.png")
+        if os.path.exists(p):
+            img = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
+            if img is not None and img.size > 0:
+                _suit_templates[s] = img
+
+
+def _detect_suit_by_template(suit_crop: np.ndarray) -> Optional[str]:
+    """
+    Сравнивает область масти с 4 шаблонами через matchTemplate.
+    Возвращает масть с наибольшим score (>0.35), иначе None.
+    """
+    if not _suit_templates_loaded:
+        _load_suit_templates()
+    if not _suit_templates:
+        return None
+
+    gray = cv2.cvtColor(suit_crop, cv2.COLOR_RGB2GRAY)
+    best_suit: Optional[str] = None
+    best_score = 0.35   # минимальный порог совпадения
+
+    for suit, tmpl in _suit_templates.items():
+        th, tw = tmpl.shape[:2]
+        gh, gw = gray.shape[:2]
+        if gh < th or gw < tw:
+            # масштабируем шаблон под размер кропа
+            scale = min(gh / max(1, th), gw / max(1, tw))
+            if scale < 0.3:
+                continue
+            tmpl_r = cv2.resize(tmpl, (max(1, int(tw * scale)),
+                                       max(1, int(th * scale))),
+                                 interpolation=cv2.INTER_AREA)
+        else:
+            tmpl_r = tmpl
+
+        th2, tw2 = tmpl_r.shape[:2]
+        if gray.shape[0] < th2 or gray.shape[1] < tw2:
+            continue
+
+        res = cv2.matchTemplate(gray, tmpl_r, cv2.TM_CCOEFF_NORMED)
+        _, score, _, _ = cv2.minMaxLoc(res)
+        if score > best_score:
+            best_score = score
+            best_suit  = suit
+
+    return best_suit
 
 
 # ── Конфигурация оттенков масти ───────────────────────────────────────────────
@@ -93,15 +154,25 @@ def detect_suit(crop: np.ndarray) -> Optional[str]:
     """
     Возвращает 'h', 'd', 'c', 's' или None (пустой слот / не удалось).
 
-    Работает для:
-      • Цветных румов — фаза 1 (используются _suit_hue_ranges из конфига)
-      • Белый фон + красные масти (♥♦) — фаза 1
-      • Белый фон + чёрные масти (♣♠, Ton Poker) — фаза 2 (shape-based)
+    Порядок попыток:
+      0. Template matching (suit_h/d/c/s.png) — если шаблоны собраны
+      1. Насыщенные пиксели → цветные масти (♥♦ красные, нестандартные румы)
+      2. Тёмные пиксели + форма → чёрные масти (♣♠, белый фон)
     """
     if crop.size == 0:
         return None
 
     fh, fw = crop.shape[:2]
+
+    # ── Шаг 0: Template matching ────────────────────────────────────────────
+    # Берём нижние 60% кропа — там масть, а не ранг
+    cy0 = int(fh * 0.30)
+    suit_area = crop[cy0:, :]
+    if suit_area.size > 0:
+        tmpl_result = _detect_suit_by_template(suit_area)
+        if tmpl_result is not None:
+            return tmpl_result
+
     hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
     h_c = hsv[:, :, 0].astype(float)
     s_c = hsv[:, :, 1].astype(float)

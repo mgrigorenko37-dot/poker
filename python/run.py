@@ -19,6 +19,7 @@ MENU = [
     ("🔍  Отладка детектора стола",            "debug_detector.py"),
     ("📐  Выбрать область стола вручную",      "select_region.py"),
     ("🔗  Изменить server URL",                "set_url.py"),
+    ("🎴  Собрать шаблоны мастей (авто)",      "gen_suit_templates.py"),
 ]
 
 DIVIDER = "─" * 42
