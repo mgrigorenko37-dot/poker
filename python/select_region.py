@@ -32,7 +32,7 @@ except ImportError:
 
 CONFIG_PATH  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 EXAMPLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.example.json")
-WIN_NAME     = "Выделение стола — ЛКМ: обвести стол,  S: сохранить,  R: сброс,  ESC: отмена"
+WIN_NAME     = "POKER SCANNER  |  LMB: drag table,  S: save,  R: reset,  ESC: cancel"
 DIVIDER      = "─" * 52
 
 
@@ -53,7 +53,28 @@ def _save_config(cfg: dict) -> None:
 
 # ── Захват экрана ──────────────────────────────────────────────────────────────
 
+def _minimize_console() -> None:
+    """Сворачивает окно терминала на Windows чтобы оно не попало в скриншот."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+    except Exception:
+        pass
+
+
 def capture_screen() -> np.ndarray:
+    """
+    Сворачивает терминал, ждёт 1.5 сек, делает скриншот.
+    Это нужно чтобы терминал не перекрывал игру на скриншоте.
+    """
+    import time
+    _minimize_console()
+    time.sleep(1.5)   # ждём пока окно свернётся
+
     with mss_lib.mss() as sct:
         mon = sct.monitors[1]
         raw = sct.grab(mon)
@@ -83,7 +104,7 @@ def select_region(frame: np.ndarray) -> Optional[tuple[int, int, int, int]]:
         vis = frame.copy()
         cv2.putText(
             vis,
-            "Зажми ЛКМ и обведи стол.  S = сохранить   R = сброс   ESC = отмена",
+            "Hold LMB and drag over the table.  S = save   R = reset   ESC = cancel",
             (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 220, 0), 2,
         )
         # Активное рисование
@@ -93,9 +114,8 @@ def select_region(frame: np.ndarray) -> Optional[tuple[int, int, int, int]]:
         if confirmed[0]:
             x, y, w, h = confirmed[0]
             cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 255, 80), 2)
-            label = f"{w}x{h} px — нажми S чтобы сохранить"
-            cv2.putText(vis, label, (16, 68),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 80), 2)
+            cv2.putText(vis, f"{w}x{h} px  ->  press S to save",
+                        (16, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 80), 2)
         cv2.imshow(WIN_NAME, vis)
 
     def _mouse(event: int, x: int, y: int, flags: int, param: object) -> None:
