@@ -636,6 +636,14 @@ def main():
     bet_filter = MoneyFilter(max_drop_ratio=0.10, max_spike_ratio=20.0)
     _last_hole_key: str = ""   # для детекта смены раздачи
 
+    # ── Накопительный борд ────────────────────────────────────────────────────
+    # Карта борда запоминается навсегда до конца раздачи.
+    # Слот None = ещё не прочитан, str = подтверждённая карта.
+    # _board_pending[i] = (карта, счётчик_подтверждений) — кандидат до фиксации.
+    _board_confirmed: list[Optional[str]] = [None] * 5
+    _board_pending:   list[tuple[Optional[str], int]] = [(None, 0)] * 5
+    BOARD_CONFIRM_FRAMES = 2   # сколько одинаковых кадров подряд нужно для фиксации
+
     print(f"\nСканирование запущено ({SCAN_FPS} FPS). Ctrl+C для остановки.\n")
     print("⏳ Открой покер-рум — скрипт найдёт стол автоматически.\n")
 
@@ -689,7 +697,7 @@ def main():
         hole_regs  = regions[:2]
         board_regs = regions[2:]
 
-        # ── Карты ──────────────────────────────────────────────────────────
+        # ── Холы ───────────────────────────────────────────────────────────
         hole: list[str] = []
         for r in hole_regs:
             c = recognize_card(frame, r["cx"], r["cy"], cw, ch)
@@ -699,26 +707,59 @@ def main():
             time.sleep(max(0, interval - (time.perf_counter() - t0)))
             continue
 
-        board: list[str] = []
-        for r in board_regs:
-            crop = extract_card_region(frame, r["cx"], r["cy"], cw, ch)
-            if looks_empty(crop): continue
-            c = recognize_card(frame, r["cx"], r["cy"], cw, ch)
-            if c: board.append(c)
-
-        if has_duplicates(hole + board):
-            time.sleep(max(0, interval - (time.perf_counter() - t0)))
-            continue
-
-        # ── Сброс фильтров при смене раздачи ──────────────────────────────
-        # Hole-карты сменились → новая раздача → банк может легально упасть до 0.
-        hole_key = "".join(sorted(hole))
+        # ── Сброс при смене раздачи ────────────────────────────────────────
+        hole_key    = "".join(sorted(hole))
         is_new_hand = (hole_key != _last_hole_key)
         if is_new_hand:
             pot_filter.reset()
             bet_filter.reset()
-            _last_hole_key = hole_key
-            _last_aggressor = None   # новая раздача — сбрасываем агрессора
+            _last_hole_key  = hole_key
+            _last_aggressor = None
+            _board_confirmed = [None] * 5
+            _board_pending   = [(None, 0)] * 5
+
+        # ── Борд — накопительный (карты запоминаются до конца раздачи) ────
+        # Для каждого слота:
+        #   • уже подтверждён → пропускаем OCR, берём из кэша
+        #   • не подтверждён → читаем; совпадает 2 кадра подряд → фиксируем
+        for i, r in enumerate(board_regs[:5]):
+            if _board_confirmed[i] is not None:
+                continue   # уже знаем эту карту
+
+            crop = extract_card_region(frame, r["cx"], r["cy"], cw, ch)
+            if looks_empty(crop):
+                _board_pending[i] = (None, 0)   # слот пуст — сбрасываем кандидата
+                continue
+
+            c = recognize_card(frame, r["cx"], r["cy"], cw, ch)
+            if not c:
+                continue
+
+            prev_card, prev_count = _board_pending[i]
+            if c == prev_card:
+                new_count = prev_count + 1
+            else:
+                new_count = 1   # новая карта — сбрасываем счётчик
+
+            _board_pending[i] = (c, new_count)
+
+            if new_count >= BOARD_CONFIRM_FRAMES:
+                _board_confirmed[i] = c   # зафиксировано!
+
+        board = [c for c in _board_confirmed if c is not None]
+
+        # ── Дубли (hole ∩ board) ───────────────────────────────────────────
+        if has_duplicates(hole + board):
+            # Если дубль — скорее всего неверно прочитан хол или борд-кандидат.
+            # Сбрасываем только неподтверждённые (pending) борд-слоты.
+            for i in range(5):
+                if _board_confirmed[i] in hole:
+                    _board_confirmed[i] = None
+                    _board_pending[i]   = (None, 0)
+            board = [c for c in _board_confirmed if c is not None]
+            if has_duplicates(hole + board):
+                time.sleep(max(0, interval - (time.perf_counter() - t0)))
+                continue
 
         # ── Активные игроки ────────────────────────────────────────────────
         detected = count_active_players(frame, seat_regions, cw, ch)
