@@ -1,0 +1,49 @@
+   ♠ POKER SCANNER — главное меню
+──────────────────────────────────────────
+  [1]  ⚡  Авто-режим (запустить всё само)
+  [2]  🚀  Запустить сканер вручную
+  [3]  🎯  Калибровка (карты + деньги)
+  [4]  🃏  Собрать шаблоны карт
+  [5]  📦  Загрузить пресет
+  [6]  📱  Привязать Telegram
+  [7]  🔍  Отладка детектора стола
+  [0]  Выход
+──────────────────────────────────────────
+  Введи номер: 1
+
+  → Запускаю: auto.py
+──────────────────────────────────────────
+
+
+────────────────────────────────────────────────────
+  ♠  POKER SCANNER — авто-режим
+────────────────────────────────────────────────────
+
+🔍 Ищу окно покер-рума... найдено: World Poker Club ✅
+🎨 Детект стола: настроен под World Poker Club
+Traceback (most recent call last):
+  File "C:\Users\Макс\OneDrive\Desktop\python\auto.py", line 420, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Макс\OneDrive\Desktop\python\auto.py", line 387, in main
+    cfg = ensure_config(profile)
+  File "C:\Users\Макс\OneDrive\Desktop\python\auto.py", line 111, in ensure_config
+    cfg = json.load(f)
+  File "C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 298, in load
+    return loads(fp.read(),
+        cls=cls, object_hook=object_hook,
+        parse_float=parse_float, parse_int=parse_int,
+        parse_constant=parse_constant, object_pairs_hook=object_pairs_hook, **kw)
+  File "C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Lib\json\decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Макс\AppData\Local\Python\pythoncore-3.14-64\Lib\json\decoder.py", line 361, in raw_decode
+    obj, end = self.scan_once(s, idx)
+               ~~~~~~~~~~~~~~^^^^^^^^
+json.decoder.JSONDecodeError: Expecting ',' delimiter: line 6 column 3 (char 188)
+
+──────────────────────────────────────────
+  Нажми Enter чтобы вернуться в меню...
