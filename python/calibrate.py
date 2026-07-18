@@ -404,8 +404,15 @@ def main():
     cfg = load_config()
 
     print("\n=== Poker Scanner — Калибровка ===")
-    print("Разверни окно с игрой, потом нажми Enter.")
+    print("1. Разверни окно с игрой на весь экран.")
+    print("2. Нажми Enter здесь — у тебя будет 3 секунды переключиться на игру.")
     input()
+
+    import time
+    for i in range(3, 0, -1):
+        print(f"  Скриншот через {i}...", end="\r", flush=True)
+        time.sleep(1)
+    print("  📸 Снимаю экран...        ")
 
     _frame = capture_screen()
     print(f"Захвачен экран: {_frame.shape[1]}×{_frame.shape[0]}\n")
