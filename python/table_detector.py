@@ -21,6 +21,14 @@ import cv2
 import numpy as np
 from typing import Optional
 
+# ── HSV-диапазон жёлтых/золотых чипов ставок ─────────────────────────────────
+# Чип ставки в Ton Poker — жёлто-золотой кружок рядом с местом игрока.
+# Если цвет не совпадает — подправь _CHIP_HSV_LO/_CHIP_HSV_HI и запусти
+# debug_detector.py чтобы визуально проверить маску.
+_CHIP_HSV_LO = np.array([15,  80, 120], dtype=np.uint8)
+_CHIP_HSV_HI = np.array([45, 255, 255], dtype=np.uint8)
+_CHIP_MIN_PIXELS = 8   # минимум жёлтых пикселей в зоне чтобы считать чип найденным
+
 # ── HSV-диапазон серо-зелёного стола Ton Poker ────────────────────────────────
 # Цвет стола: приглушённый sage/olive-green (~#8FAF8A).
 # В OpenCV HSV: H 0-180, S 0-255, V 0-255.
@@ -222,6 +230,56 @@ def compute_regions(bbox: tuple[int, int, int, int],
         "seat_regions":  seat_regions,
         "layout":        layout,
     }
+
+
+# ── Детект чипов ставки рядом с местами оппонентов ───────────────────────────
+
+def detect_bet_chips(frame: np.ndarray,
+                     bbox: tuple[int, int, int, int],
+                     seat_regions: list[dict]) -> list[bool]:
+    """
+    Для каждого места оппонента проверяет наличие жёлтого чипа ставки.
+
+    Принцип: когда игрок ставит, жёлто-золотой чип появляется между его
+    местом и центром стола (~45% пути от центра к месту).
+    Возвращает список bool (True = чип найден = этот игрок сделал ставку).
+
+    Если цвет не срабатывает — подправь _CHIP_HSV_LO/_CHIP_HSV_HI выше
+    и проверь через debug_detector.py.
+    """
+    if not seat_regions or bbox is None:
+        return [False] * len(seat_regions)
+
+    bx, by, bw, bh = bbox
+    fh, fw = frame.shape[:2]
+    cx_px = bx + bw / 2.0
+    cy_px = by + bh / 2.0
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+    chip_mask = cv2.inRange(hsv, _CHIP_HSV_LO, _CHIP_HSV_HI)
+
+    # Зона поиска вокруг точки чипа: ~8% размера стола
+    zone_w = max(18, int(bw * 0.08))
+    zone_h = max(14, int(bh * 0.08))
+
+    results: list[bool] = []
+    for seat in seat_regions:
+        seat_px = seat["cx"] * fw
+        seat_py = seat["cy"] * fh
+
+        # Чип находится примерно на 45% пути от центра стола к месту игрока
+        chip_px = cx_px + (seat_px - cx_px) * 0.45
+        chip_py = cy_px + (seat_py - cy_px) * 0.45
+
+        x1 = max(0, int(chip_px - zone_w / 2))
+        y1 = max(0, int(chip_py - zone_h / 2))
+        x2 = min(fw, x1 + zone_w)
+        y2 = min(fh, y1 + zone_h)
+
+        zone = chip_mask[y1:y2, x1:x2]
+        results.append(int(np.sum(zone > 0)) >= _CHIP_MIN_PIXELS)
+
+    return results
 
 
 # ── Главная точка входа для сканера ──────────────────────────────────────────

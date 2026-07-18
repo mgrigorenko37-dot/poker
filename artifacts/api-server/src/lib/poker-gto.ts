@@ -229,13 +229,21 @@ export function getPreflopFrequencies(
   handKey: string,
   position: Position,
   facingRaise = false,
+  aggressorPosition = '',
 ): PreflopFrequencies {
   const percentile = PLAYABILITY_PERCENTILE[handKey] ?? 100;
   const isSuited = handKey.endsWith('s');
 
   if (facingRaise) {
+    // When we know who opened, scale our continue range by their range width.
+    // Tight opener (UTG 15%) → we need stronger hands → multiplier < 1.
+    // Wide opener (BTN 48%) → baseline → multiplier ≈ 1.
+    const villainMult = getVillainRangeMultiplier(aggressorPosition);
+
     const valueThreeBetFreq = getThreeBetFrequency(percentile, position);
-    const continueFreq = getContinueFrequency(percentile, position);
+    // Adjust raw continue percentile threshold by villain tightness
+    const adjustedPercentile = percentile / villainMult;
+    const continueFreq = getContinueFrequency(adjustedPercentile, position);
     const callFreq = Math.max(0, continueFreq - valueThreeBetFreq);
 
     // Light 3bet bluff: suited hands from BTN/CO just past the flat-call
@@ -268,9 +276,10 @@ export function getGTOPreflopAdvice(
   position: Position,
   facingRaise = false,
   stackBBs = 100,
-): { action: 'RAISE' | '3BET' | 'CALL' | 'FOLD'; reason: string; strength: string; frequencies: PreflopFrequencies } {
+  aggressorPosition = '',
+): { action: 'RAISE' | '3BET' | 'CALL' | 'FOLD'; reason: string; strength: string; frequencies: PreflopFrequencies; aggressorNote: string } {
   if (holeCards.length !== 2) {
-    return { action: 'FOLD', reason: 'Нет карт', strength: 'Unknown', frequencies: { raise: 0, call: 0, fold: 1, isMixed: false } };
+    return { action: 'FOLD', reason: 'Нет карт', strength: 'Unknown', frequencies: { raise: 0, call: 0, fold: 1, isMixed: false }, aggressorNote: '' };
   }
 
   const equity = getPreflopEquity(holeCards);
@@ -282,24 +291,30 @@ export function getGTOPreflopAdvice(
   else if (equity >= 60) strength = 'Medium';
   else if (equity >= 54) strength = 'Speculative';
 
-  const frequencies = getPreflopFrequencies(key, position, facingRaise);
+  const frequencies = getPreflopFrequencies(key, position, facingRaise, aggressorPosition);
+
+  // Human-readable note about aggressor range when known
+  const villainWidth = VILLAIN_OPEN_WIDTH[aggressorPosition];
+  const aggressorNote = aggressorPosition && villainWidth
+    ? `Агрессор: ${aggressorPosition} (диапазон ~${villainWidth}% рук)`
+    : '';
   const mixNote = frequencies.isMixed ? ' — смешанная стратегия, не 100%/0%' : '';
 
   if (facingRaise) {
     if (frequencies.raise >= frequencies.call && frequencies.raise >= frequencies.fold) {
-      return { action: '3BET', reason: `3bet (${equity.toFixed(0)}% equity, солвер: ${(frequencies.raise * 100).toFixed(0)}%)${mixNote}`, strength, frequencies };
+      return { action: '3BET', reason: `3bet (${equity.toFixed(0)}% equity, солвер: ${(frequencies.raise * 100).toFixed(0)}%)${mixNote}`, strength, frequencies, aggressorNote };
     }
     if (frequencies.call >= frequencies.fold) {
-      return { action: 'CALL', reason: `Колл против рейза (${equity.toFixed(0)}% equity, ${position}, солвер: ${(frequencies.call * 100).toFixed(0)}%)${mixNote}`, strength, frequencies };
+      return { action: 'CALL', reason: `Колл против рейза (${equity.toFixed(0)}% equity, ${position}, солвер: ${(frequencies.call * 100).toFixed(0)}%)${mixNote}`, strength, frequencies, aggressorNote };
     }
-    return { action: 'FOLD', reason: `Вне диапазона колла для ${position} против рейза (солвер: fold ${(frequencies.fold * 100).toFixed(0)}%)${mixNote}`, strength, frequencies };
+    return { action: 'FOLD', reason: `Вне диапазона колла для ${position} против рейза (солвер: fold ${(frequencies.fold * 100).toFixed(0)}%)${mixNote}`, strength, frequencies, aggressorNote };
   }
 
   if (frequencies.raise >= 0.5) {
     const sizing = stackBBs <= 20 ? 'ALL-IN' : stackBBs <= 40 ? '3BB' : '2.5BB';
-    return { action: 'RAISE', reason: `${position} RFI → ${sizing} (${equity.toFixed(0)}% equity, солвер: raise ${(frequencies.raise * 100).toFixed(0)}%)${mixNote}`, strength, frequencies };
+    return { action: 'RAISE', reason: `${position} RFI → ${sizing} (${equity.toFixed(0)}% equity, солвер: raise ${(frequencies.raise * 100).toFixed(0)}%)${mixNote}`, strength, frequencies, aggressorNote };
   }
-  return { action: 'FOLD', reason: `Вне диапазона открытия для ${position} (солвер: raise только ${(frequencies.raise * 100).toFixed(0)}%)${mixNote}`, strength, frequencies };
+  return { action: 'FOLD', reason: `Вне диапазона открытия для ${position} (солвер: raise только ${(frequencies.raise * 100).toFixed(0)}%)${mixNote}`, strength, frequencies, aggressorNote };
 }
 
 // ─── Draw Detection ───────────────────────────────────────────────────────────
@@ -454,6 +469,24 @@ export function detectDraws(holeCards: Card[], boardCards: Card[]): DrawInfo | n
   };
 }
 
+// ─── Villain Opening Range Width ─────────────────────────────────────────────
+// When we know which position opened/raised, we know roughly how wide their
+// range is. A tight opener (UTG 15%) means we need stronger hands to continue
+// vs them than against a wide opener (BTN 48%).
+const VILLAIN_OPEN_WIDTH: Partial<Record<string, number>> = {
+  UTG: 15, MP: 19, HJ: 24, CO: 32, BTN: 48, SB: 38, BB: 100,
+};
+
+// Multiplier applied to our continue range vs a known aggressor.
+// BTN (wide, 48%) → 1.0 baseline.
+// UTG (tight, 15%) → ~0.83 (we fold more vs tight range).
+// Formula keeps it linear and clamped to [0.65, 1.15].
+function getVillainRangeMultiplier(aggressorPos: string): number {
+  const width = VILLAIN_OPEN_WIDTH[aggressorPos];
+  if (!width) return 1.0;
+  return Math.max(0.65, Math.min(1.15, 0.75 + (width / 48) * 0.25));
+}
+
 // ─── MDF (Minimum Defense Frequency) ─────────────────────────────────────────
 // How often you need to continue (call/raise) to make villain's bluffs 0 EV
 
@@ -577,6 +610,7 @@ export function getFullAdvice(
   position: string,
   simResult: SimulationResult,
   villainAggression: number = 1.0,
+  aggressorPosition: string = '',
 ): FullAdvice {
   const w = simResult.winProb;
   const isPreflop = boardCards.length === 0;
@@ -630,7 +664,7 @@ export function getFullAdvice(
   // ── PREFLOP ─────────────────────────────────────────────────────────────────
   if (isPreflop) {
     const pos = position as Position;
-    const preflopAdvice = getGTOPreflopAdvice(holeCards, pos, betToCall > 0, 100);
+    const preflopAdvice = getGTOPreflopAdvice(holeCards, pos, betToCall > 0, 100, aggressorPosition);
 
     if (preflopAdvice.action === '3BET') {
       action = 'RAISE'; displayText = '3BET'; color = 'bg-purple-600';
@@ -649,6 +683,7 @@ export function getFullAdvice(
       details.push(preflopAdvice.reason);
     }
     details.push(`Equity: ${getPreflopEquity(holeCards).toFixed(0)}% vs случайной`);
+    if (preflopAdvice.aggressorNote) details.push(preflopAdvice.aggressorNote);
     if (preflopAdvice.frequencies.isMixed) {
       const f = preflopAdvice.frequencies;
       const parts = [

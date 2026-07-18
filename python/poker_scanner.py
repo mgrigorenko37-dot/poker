@@ -33,7 +33,7 @@ import numpy as np
 import requests
 
 from card_utils import detect_suit, refine_red_suit, extract_card_region, looks_empty, configure_suits
-from table_detector import get_table_state
+from table_detector import get_table_state, detect_bet_chips
 
 # ── EasyOCR — fallback когда нет шаблона ────────────────────────────────────
 _ocr_reader = None
@@ -428,7 +428,8 @@ class MoneyFilter:
 # ── Отправка ─────────────────────────────────────────────────────────────────
 _last_key = ""
 
-def send_scan(cfg, hole, board, pot, bet, players: int, position: str) -> None:
+def send_scan(cfg, hole, board, pot, bet, players: int, position: str,
+              aggressor_pos: Optional[str]) -> None:
     global _last_key
     payload = {
         "holeCards":        hole,
@@ -439,7 +440,10 @@ def send_scan(cfg, hole, board, pot, bet, players: int, position: str) -> None:
         "position":         position,
         # Множитель агрессии виллана: 0.5 = пассивный, 1.0 = базовый, 2.0 = гиперагрессивный.
         # Настраивается в config.json → "villain_aggression".
-        "villainAggression": cfg.get("villain_aggression", 1.0),
+        "villainAggression":  cfg.get("villain_aggression", 1.0),
+        # Позиция агрессора (кто поставил/рейзнул) — авто-детект по жёлтому чипу.
+        # Пустая строка = неизвестно (советник использует только позицию героя).
+        "aggressorPosition":  aggressor_pos or "",
     }
     key = hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     if key == _last_key: return
@@ -452,7 +456,8 @@ def send_scan(cfg, hole, board, pot, bet, players: int, position: str) -> None:
         equity = round((data.get("equity") or 0) * 100)
         pot_s  = f"  банк={pot:.0f}" if pot else ""
         bet_s  = f"  колл={bet:.0f}" if bet else ""
-        print(f"  → {action}  Win {equity}%  [{position} / {players}p]  |  {' '.join(hole)} | {' '.join(board)}{pot_s}{bet_s}")
+        agg_s  = f"  agg={aggressor_pos}" if aggressor_pos else ""
+        print(f"  → {action}  Win {equity}%  [{position} / {players}p]{agg_s}  |  {' '.join(hole)} | {' '.join(board)}{pot_s}{bet_s}")
     except requests.exceptions.ConnectionError:
         print(f"  ⚠️  Сервер недоступен ({url[:50]}…)")
     except Exception as e:
@@ -505,6 +510,10 @@ def main():
     dealer_tmpl       = load_dealer_template()
     position_fallback = cfg.get("position", "BTN")
     _last_position    = position_fallback
+    _last_d_seat: int = 0       # последний известный индекс места дилера
+
+    # ── Агрессор (авто-детект по жёлтому чипу) ───────────────────────────────
+    _last_aggressor: Optional[str] = None  # позиция оппонента который поставил
 
     if dealer_tmpl is not None:
         print("🎯 Позиция: авто-детект по кнопке D")
@@ -597,13 +606,15 @@ def main():
             time.sleep(max(0, interval - (time.perf_counter() - t0)))
             continue
 
-        # ── Сброс денежных фильтров при смене раздачи ──────────────────────
+        # ── Сброс фильтров при смене раздачи ──────────────────────────────
         # Hole-карты сменились → новая раздача → банк может легально упасть до 0.
         hole_key = "".join(sorted(hole))
-        if hole_key != _last_hole_key:
+        is_new_hand = (hole_key != _last_hole_key)
+        if is_new_hand:
             pot_filter.reset()
             bet_filter.reset()
             _last_hole_key = hole_key
+            _last_aggressor = None   # новая раздача — сбрасываем агрессора
 
         # ── Активные игроки ────────────────────────────────────────────────
         detected = count_active_players(frame, seat_regions, cw, ch)
@@ -618,6 +629,7 @@ def main():
             if dealer_pos is not None:
                 d_seat = nearest_seat(dealer_pos[0], dealer_pos[1],
                                       hero_cx, hero_cy, seat_regions)
+                _last_d_seat  = d_seat
                 _last_position = compute_position(0, d_seat, total_seats)
         position = _last_position
 
@@ -647,7 +659,27 @@ def main():
         pot = pot_filter.update(raw_pot)
         bet = bet_filter.update(raw_bet)
 
-        send_scan(cfg, hole, board, pot, bet, players, position)
+        # ── Агрессор (кто поставил — авто-детект по жёлтому чипу) ────────────
+        # Логика:
+        #   - нет ставки (bet==0) → сбрасываем (новая улица или начало)
+        #   - есть ставка → ищем жёлтый чип у мест оппонентов
+        #   - нашли → запоминаем позицию агрессора до конца ставки
+        #   - не нашли (чип ещё анимируется) → держим последнее значение
+        if not bet:
+            _last_aggressor = None
+        elif regions_dict is not None and dbg.get("bbox") and seat_regions:
+            chips = detect_bet_chips(frame, dbg["bbox"], seat_regions)
+            for i, has_chip in enumerate(chips):
+                if has_chip:
+                    # seat_regions содержит только оппонентов; в all_seats индекс i+1
+                    opp_in_all = i + 1
+                    table = _POSITIONS_6 if total_seats <= 6 else _POSITIONS_9
+                    offset = (opp_in_all - _last_d_seat) % total_seats
+                    if offset < len(table):
+                        _last_aggressor = table[offset]
+                    break
+
+        send_scan(cfg, hole, board, pot, bet, players, position, _last_aggressor)
 
         # ── Статистика раз в 60 тиков (~12 сек) ────────────────────────────
         stat_tick += 1

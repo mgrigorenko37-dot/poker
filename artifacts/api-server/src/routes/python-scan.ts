@@ -39,6 +39,7 @@ function buildResult(raw: {
   players: number;
   position: string;
   villainAggression: number;
+  aggressorPosition: string;
 }) {
   const hole = raw.holeCards.map(parseCard);
   const board = raw.boardCards.map(parseCard);
@@ -55,6 +56,7 @@ function buildResult(raw: {
     raw.position,
     sim,
     raw.villainAggression,
+    raw.aggressorPosition,
   );
 
   return {
@@ -106,6 +108,9 @@ router.post("/python/scan", (req, res) => {
     villainAggression: typeof body.villainAggression === "number"
       ? Math.max(0.2, Math.min(3.0, body.villainAggression))
       : 1.0,
+    // aggressorPosition: detected from screen by Python scanner (who bet/raised).
+    // Empty string = unknown (advice falls back to position-only logic).
+    aggressorPosition: typeof body.aggressorPosition === "string" ? body.aggressorPosition : '',
   };
 
   try {
