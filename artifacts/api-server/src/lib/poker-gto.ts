@@ -671,24 +671,77 @@ export function getFullAdvice(
 
   if (hasNoBet) {
     // ── No bet facing — we act first (check or bet) ──
+    //
+    // Modern sizing pattern (Negreanu / solver-derived):
+    //   Flop  → small (33% pot): wide range c-bet, low information to villain
+    //   Turn  → medium (50-75% pot): narrowing range, build pot
+    //   River → binary: overbet (1.5× pot) for polarized / small (25-33% pot) for thin value
+    //   Half-pot bets are now rare — players use small OR large, rarely in between.
+    const isRiver = street === 'river';
+    const isTurn  = street === 'turn';
+    const isFlop  = street === 'flop';
+
+    // Polarised river situation: our range is either monster or nothing →
+    // overbet maximises EV. Applies when we have a strong made hand on the river.
+    const isPolarisedRiver = isRiver && handRank !== null && handRank >= HandRank.FLUSH;
+
     if (isStrong || w > 0.72) {
       action = 'RAISE'; displayText = 'BET'; color = 'bg-emerald-600';
-      sizing = w > 0.80 ? '75% pot' : '50% pot';
-      details.push(`Win ${(w * 100).toFixed(0)}% — строй пот`);
-      if (handName) details.push(handName);
+
+      if (isPolarisedRiver) {
+        // River monster: polarised range → overbet for max value
+        sizing = 'OVERBET (1.5× pot)';
+        details.push(`Win ${(w * 100).toFixed(0)}% — диапазон поляризован, оверберт`);
+        if (handName) details.push(handName);
+        details.push('Оверберт: ваш диапазон — монстр или воздух. Слабые руки виллана не могут коллировать, сильные заплатят максимум');
+      } else if (isRiver && w > 0.72 && w <= 0.85) {
+        // River thin value: small bet — villain calls more often with marginal hands
+        sizing = '25% pot';
+        details.push(`Win ${(w * 100).toFixed(0)}% — тонкое вэлью на ривере`);
+        if (handName) details.push(handName);
+        details.push('Маленькая ставка: виллан с маргинальными руками охотнее заколлирует чем большую. Важна дистанция, не один пот');
+      } else if (isRiver) {
+        // River strong but not monster and not thin: standard value
+        sizing = '50% pot';
+        details.push(`Win ${(w * 100).toFixed(0)}% — строй пот`);
+        if (handName) details.push(handName);
+      } else if (isTurn) {
+        // Turn: build pot, protect against draws
+        sizing = w > 0.80 ? '75% pot' : '50% pot';
+        details.push(`Win ${(w * 100).toFixed(0)}% — строй пот, защищай от дро`);
+        if (handName) details.push(handName);
+      } else {
+        // Flop: small c-bet with strong hand (modern standard)
+        sizing = '33% pot';
+        details.push(`Win ${(w * 100).toFixed(0)}% — строй пот`);
+        if (handName) details.push(handName);
+        details.push('C-бет 33% — современный стандарт на флопе: широкий диапазон, виллан не может легко определить силу руки');
+      }
     } else if (isMedium && w > 0.55) {
       action = 'RAISE'; displayText = 'BET'; color = 'bg-emerald-600';
-      sizing = '33% pot';
-      details.push(`${handName} (${(w * 100).toFixed(0)}%) — защищай средней ставкой`);
+      if (isRiver) {
+        // River medium: very small value bet or check — avoid bloated pot OOP
+        sizing = '25% pot';
+        details.push(`${handName} (${(w * 100).toFixed(0)}%) — маленькое вэлью на ривере`);
+        details.push('25% pot: приглашаем колл от худших рук, не раздуваем пот против монстров');
+      } else {
+        sizing = '33% pot';
+        details.push(`${handName} (${(w * 100).toFixed(0)}%) — защищай небольшой ставкой`);
+        if (isFlop) details.push('33% флоп — широкий диапазон, солверный стандарт');
+      }
     } else if (hasGoodDraw) {
-      // Semi-bluff with draw
+      // Semi-bluff with draw — size depends on street
       action = 'RAISE'; displayText = 'BET (полублеф)'; color = 'bg-teal-600';
-      sizing = '50% pot';
+      // Flop: small semi-bluff (33%) — cheap pressure, lots of equity remaining
+      // Turn: larger (50%) — fewer cards left, need more fold equity now
+      const semiBluffPct = isTurn ? 0.50 : 0.33;
+      sizing = isTurn ? '50% pot' : '33% pot';
       details.push(draws!.description);
       details.push(`~${draws!.equityRiverClean}% "чистого" equity на дроу (грязных ${draws!.equityRiver}%) — полублеф`);
+      if (isFlop) details.push('33% флоп: дешёвый полублеф — если не пройдёт, остаётся equity; если пройдёт — забираем сейчас');
       if (draws!.antiOutsNote) details.push(draws!.antiOutsNote);
       if (potSize > 0) {
-        const betSize = potSize * 0.5;
+        const betSize = potSize * semiBluffPct;
         const foldEq = estimateFoldEquity(potSize, betSize, boardCards, players, street);
         const betEV = getRaiseEV(effectiveEquity, potSize, betSize, foldEq);
         details.push(`Фолд-эквити ~${(foldEq * 100).toFixed(0)}% (${players} игрок${players === 2 ? '' : 'ов'}) — EV ставки: ${betEV > 0 ? '+' : ''}${betEV.toFixed(1)} BB`);
