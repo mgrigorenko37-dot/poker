@@ -862,8 +862,8 @@ export function ScreenScan() {
         // Fire-and-forget: don't block the next scan tick on network latency —
         // Telegram/phone push happens in the background while OCR keeps going.
         pushAnalysis({
-          holeCards:  hole.map(c => `${c.rank}${c.suit}`),
-          boardCards: board.map(c => `${c.rank}${c.suit}`),
+          holeCards:  hole.map(c => `${rankLabel(c.rank)}${c.suit}`),
+          boardCards: board.map(c => `${rankLabel(c.rank)}${c.suit}`),
           action: fa.action, displayText: fa.displayText, color: fa.color,
           details: fa.details, equity: fa.equity, potOdds: fa.potOdds, mdf: fa.mdf,
           handCategory: fa.handCategory, handName: fa.handName, draws: fa.draws,

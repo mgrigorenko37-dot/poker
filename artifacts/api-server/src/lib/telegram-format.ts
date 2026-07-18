@@ -20,10 +20,15 @@
 
 const SUIT_SYM: Record<string, string> = { h: "♥", d: "♦", c: "♣", s: "♠" };
 
+const NUM_RANK: Record<string, string> = {
+  "14": "A", "13": "K", "12": "Q", "11": "J", "10": "T",
+};
+
 function fmtCard(c: string): string {
   const rank = c.slice(0, -1);
   const suit = c.slice(-1);
-  return `${rank === "T" ? "10" : rank}${SUIT_SYM[suit] ?? suit}`;
+  const r = NUM_RANK[rank] ?? (rank === "T" ? "10" : rank);
+  return `${r}${SUIT_SYM[suit] ?? suit}`;
 }
 
 const ACTION_EMOJI: Record<string, string> = {
