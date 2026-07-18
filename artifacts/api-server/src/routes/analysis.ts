@@ -41,14 +41,26 @@ router.post("/analysis", (req, res) => {
 router.post("/telegram/link", async (_req, res) => {
   const found = await fetchLatestChatId();
   if (!found) {
-    res.status(404).json({ error: "No messages found — send /start to your bot first" });
+    res.status(404).json({ ok: false, error: "No messages found — send /start to your bot first" });
     return;
   }
-  res.json(found);
+  res.json({ ok: true, ...found });
 });
 
 router.get("/telegram/status", (_req, res) => {
   res.json({ configured: isTelegramConfigured() });
+});
+
+// Send a test message to confirm the bot is working.
+router.post("/telegram/test", async (_req, res) => {
+  if (!isTelegramConfigured()) {
+    res.status(400).json({ ok: false, error: "Telegram not configured" });
+    return;
+  }
+  await sendTelegramMessage(
+    "✅ <b>Poker Advisor подключён!</b>\n\nТеперь советы будут приходить сюда во время игры."
+  );
+  res.json({ ok: true });
 });
 
 // Phone can poll this if WebSocket isn't available
