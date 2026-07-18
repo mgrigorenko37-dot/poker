@@ -463,6 +463,86 @@ def send_scan(cfg, hole, board, pot, bet, players: int, position: str,
     except Exception as e:
         print(f"  ⚠️  Ошибка: {e}")
 
+# ── Автоподключение Telegram ──────────────────────────────────────────────────
+
+def setup_telegram(cfg: dict) -> None:
+    """
+    Вызывается один раз при старте poker_scanner.py.
+
+    Логика:
+      • Если Telegram уже привязан → сообщаем и идём дальше.
+      • Если нет → просим написать боту /start и привязываем автоматически.
+      • Привязка сохраняется на сервере — следующий запуск пройдёт без вопросов.
+    """
+    server_url = cfg.get("server_url", "")
+    base = server_url.split("/api/")[0] if "/api/" in server_url else server_url.rstrip("/")
+    if not base:
+        return
+
+    # 1. Проверяем статус
+    try:
+        r = requests.get(f"{base}/api/telegram/status", timeout=5)
+        status = r.json()
+    except Exception:
+        print("⚠️  Telegram: сервер недоступен, пропускаю проверку")
+        return
+
+    already = status.get("ready") or status.get("configured") or status.get("hasChatId")
+    if already:
+        print("📱 Telegram: подключён — советы будут приходить в бот")
+        return
+
+    if not status.get("hasToken"):
+        print("⚠️  Telegram: токен бота не задан на сервере (добавь TELEGRAM_BOT_TOKEN в Replit Secrets)")
+        return
+
+    # 2. Привязываем
+    print()
+    print("=" * 52)
+    print("  Подключение Telegram (один раз)")
+    print("=" * 52)
+    print()
+    print("  1. Открой Telegram")
+    print("  2. Найди своего бота")
+    print('  3. Напиши ему: /start')
+    print()
+    try:
+        input("  ✅ Написал /start? Нажми Enter → ")
+    except EOFError:
+        pass  # неинтерактивный режим
+
+    print()
+    linked = False
+    for attempt in range(3):
+        try:
+            r = requests.post(f"{base}/api/telegram/link", timeout=15)
+            data = r.json()
+            if r.status_code == 200 and data.get("ok"):
+                name = data.get("username", "")
+                print(f"  ✅ Telegram подключён!{(' (@' + name + ')') if name else ''}")
+                linked = True
+                break
+            else:
+                err = data.get("error", r.text[:80])
+                print(f"  Попытка {attempt + 1}/3: {err}")
+        except Exception as e:
+            print(f"  Попытка {attempt + 1}/3 ошибка: {e}")
+        if attempt < 2:
+            time.sleep(3)
+
+    if linked:
+        # Тестовое сообщение — убеждаемся что всё дошло
+        try:
+            requests.post(f"{base}/api/telegram/test", timeout=10)
+            print("  📨 Тестовое сообщение отправлено — проверь бот!")
+        except Exception:
+            pass
+    else:
+        print("  ⚠️  Не удалось подключить Telegram. Сканер запустится без него.")
+
+    print()
+
+
 # ── Основной цикл ─────────────────────────────────────────────────────────────
 def main():
     global _tmpl_hits, _ocr_hits, _misses
@@ -472,6 +552,9 @@ def main():
     if "ТВОЙ_ДОМЕН" in url or not url:
         print("❌ Укажи server_url в config.json")
         sys.exit(1)
+
+    # ── Telegram — автоподключение при старте ─────────────────────────────────
+    setup_telegram(cfg)
 
     # Загружаем конфиг мастей (если задан suit_hue_ranges для нестандартного рума)
     configure_suits(cfg)
