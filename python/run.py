@@ -18,6 +18,7 @@ MENU = [
     ("📱  Привязать Telegram",                  "link_telegram.py"),
     ("🔍  Отладка детектора стола",            "debug_detector.py"),
     ("📐  Выбрать область стола вручную",      "select_region.py"),
+    ("🔗  Изменить server URL",                "set_url.py"),
 ]
 
 DIVIDER = "─" * 42

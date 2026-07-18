@@ -127,9 +127,10 @@ def ensure_config(profile: Optional[dict]) -> dict:
             "money_regions": {},
         }
 
-    # ── server_url — единственный обязательный ввод ───────────────────────
+    # ── server_url ────────────────────────────────────────────────────────
     url = cfg.get("server_url", "")
     if not url or "ТВОЙ_ДОМЕН" in url:
+        # Первый запуск — URL не задан
         print()
         print(DIVIDER)
         print("  Первый запуск — нужен server_url")
@@ -142,6 +143,38 @@ def ensure_config(profile: Optional[dict]) -> dict:
         cfg["server_url"] = url
         _save_config(cfg)
         print("  ✅ Сохранено\n")
+    else:
+        # URL уже есть — показываем и даём сменить
+        print(f"🔗 URL: {url}")
+        print("   Сменить? [y/N]: ", end="", flush=True)
+
+        ans_holder: list[str] = [""]
+
+        def _read_url_ans() -> None:
+            try:
+                ans_holder[0] = input().strip().lower()
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_read_url_ans, daemon=True)
+        t.start()
+        t.join(timeout=5)
+
+        if ans_holder[0] == "y":
+            print()
+            print("  Открой Replit → скопируй ссылку вида:")
+            print("  https://xxxxx.replit.dev/api/python/scan")
+            print()
+            new_url = input("  Вставь новый URL: ").strip()
+            if new_url:
+                cfg["server_url"] = new_url
+                url = new_url
+                _save_config(cfg)
+                print("  ✅ URL обновлён\n")
+            else:
+                print("  — Пусто, оставляю старый\n")
+        else:
+            print("(без изменений)")
 
     # ── Пресет — если регионы пустые ИЛИ сменился профиль игры ──────────
     active = cfg.get("active_preset", "")
