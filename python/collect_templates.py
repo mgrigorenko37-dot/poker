@@ -25,7 +25,8 @@ import cv2
 import numpy as np
 
 from card_utils import detect_suit, refine_red_suit, configure_suits
-from table_detector import get_table_state
+from table_detector import get_table_state, set_manual_bbox as _set_manual_bbox
+from cv2_unicode import imwrite as _cv2_imwrite
 
 try:
     import easyocr
@@ -129,15 +130,22 @@ def ocr_card_full(reader, crop: np.ndarray) -> Tuple[Optional[str], Optional[str
 # ── Главный цикл ──────────────────────────────────────────────────────────────
 def main():
     cfg = load_config()
-    regions = cfg.get("regions", [])
-    if len(regions) < 2:
-        print("❌ Нет карточных регионов — запусти python calibrate.py")
-        sys.exit(1)
+    manual_regions = cfg.get("regions", [])
 
     os.makedirs(TEMPLATES_DIR, exist_ok=True)
 
-    # Загружаем конфиг мастей (если задан suit_hue_ranges для нестандартного рума)
+    # Загружаем конфиг мастей
     configure_suits(cfg)
+
+    # Применяем manual_table_bbox → авто-детект вернёт правильные регионы
+    _saved_bbox = cfg.get("manual_table_bbox")
+    if _saved_bbox:
+        _set_manual_bbox((_saved_bbox["x"], _saved_bbox["y"],
+                          _saved_bbox["w"], _saved_bbox["h"]))
+        print(f"📐 Область стола: ручная ({_saved_bbox['w']}×{_saved_bbox['h']} px)")
+    elif len(manual_regions) < 2:
+        print("❌ Нет карточных регионов — запусти python calibrate.py или выбери область [8]")
+        sys.exit(1)
 
     print("\n=== Сбор шаблонов карт ===")
     print("Инициализация EasyOCR (может занять ~15 сек)...")
@@ -187,20 +195,22 @@ def main():
 
         fh, fw = frame.shape[:2]
 
-        # Используем ту же формулу размера карты что и poker_scanner.py:
-        # если авто-детект нашёл стол — от высоты bbox (bh * 0.095),
-        # иначе — фолбек на card_height_pct от высоты экрана.
-        # Это гарантирует что шаблоны и сканер режут карту одинаково.
+        # Авто-детект стола — получаем регионы и размер карты
         regions_dict, dbg = get_table_state(frame)
-        if regions_dict is not None and dbg.get("bbox"):
+        if regions_dict is not None:
+            active_regions = regions_dict["regions"]
             _, _, _, bh = dbg["bbox"]
             ch = max(10, int(bh * 0.095))
-        else:
+        elif manual_regions:
+            active_regions = manual_regions
             ch = max(10, int(fh * card_h_pct / 100))
-        cw = max(8,  int(ch * 0.72))
+        else:
+            time.sleep(0.3)
+            continue
+        cw = max(8, int(ch * 0.72))
 
         # ── Каждый регион ───────────────────────────────────────────────────
-        for r in regions:
+        for r in active_regions:
             crop = extract_card(frame, r["cx"], r["cy"], cw, ch)
             if crop.size == 0:
                 continue
@@ -217,10 +227,9 @@ def main():
             if key not in missing:
                 continue  # уже есть
 
-            # Сохраняем BGR для cv2.imread совместимости
             path = os.path.join(TEMPLATES_DIR, f"{key}.png")
             bgr  = cv2.cvtColor(crop, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(path, bgr)
+            _cv2_imwrite(path, bgr)
             missing.discard(key)
             print(f"\n  💾 {key}  (уверенность {conf:.2f})  → {path}")
 

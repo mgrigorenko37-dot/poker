@@ -21,6 +21,7 @@ import json
 import time
 import cv2
 import numpy as np
+from cv2_unicode import imread as _cv2_imread, imwrite as _cv2_imwrite
 
 try:
     import mss
@@ -52,7 +53,7 @@ def capture() -> np.ndarray:
 
 
 def load_image(path: str) -> np.ndarray:
-    img = cv2.imread(path)
+    img = _cv2_imread(path)
     if img is None:
         return None
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -183,7 +184,7 @@ def suit_shape(suit_crop: np.ndarray, color: str) -> str:
 def save_template(suit: str, crop: np.ndarray) -> str:
     os.makedirs(SUITS_DIR, exist_ok=True)
     path = os.path.join(SUITS_DIR, f"suit_{suit}.png")
-    cv2.imwrite(path, cv2.cvtColor(crop, cv2.COLOR_RGB2BGR))
+    _cv2_imwrite(path, cv2.cvtColor(crop, cv2.COLOR_RGB2BGR))
     return path
 
 

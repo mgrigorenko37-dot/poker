@@ -31,6 +31,7 @@ import os
 from typing import Optional
 import cv2
 import numpy as np
+from cv2_unicode import imread as _cv2_imread
 
 # ── Шаблоны мастей (загружаются один раз) ────────────────────────────────────
 _SUITS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -45,7 +46,7 @@ def _load_suit_templates() -> None:
     for s in ("h", "d", "c", "s"):
         p = os.path.join(_SUITS_DIR, f"suit_{s}.png")
         if os.path.exists(p):
-            img = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
+            img = _cv2_imread(p, cv2.IMREAD_GRAYSCALE)
             if img is not None and img.size > 0:
                 _suit_templates[s] = img
 

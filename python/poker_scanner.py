@@ -34,6 +34,7 @@ import requests
 
 from card_utils import detect_suit, refine_red_suit, extract_card_region, looks_empty, configure_suits
 from table_detector import get_table_state, detect_bet_chips
+from cv2_unicode import imread as _cv2_imread
 
 # ── EasyOCR — fallback когда нет шаблона ────────────────────────────────────
 _ocr_reader = None
@@ -89,7 +90,7 @@ def load_templates() -> dict[str, np.ndarray]:
         if not fn.endswith(".png"):
             continue
         key = fn[:-4]  # "Ah", "Kd" …
-        img = cv2.imread(os.path.join(TEMPLATES_DIR, fn), cv2.IMREAD_GRAYSCALE)
+        img = _cv2_imread(os.path.join(TEMPLATES_DIR, fn), cv2.IMREAD_GRAYSCALE)
         if img is not None:
             tmpl[key] = img
     return tmpl
@@ -290,7 +291,7 @@ def load_dealer_template() -> Optional[np.ndarray]:
     """Загружает шаблон кнопки D из templates/dealer_button.png (grayscale)."""
     if not os.path.exists(DEALER_TMPL_PATH):
         return None
-    tmpl = cv2.imread(DEALER_TMPL_PATH, cv2.IMREAD_GRAYSCALE)
+    tmpl = _cv2_imread(DEALER_TMPL_PATH, cv2.IMREAD_GRAYSCALE)
     return tmpl if tmpl is not None and tmpl.size > 0 else None
 
 def find_dealer_button(frame: np.ndarray,
