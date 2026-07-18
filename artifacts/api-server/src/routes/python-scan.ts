@@ -21,6 +21,7 @@
 import { Router, type IRouter } from "express";
 import { broadcastAnalysis } from "../lib/live-analysis";
 import { isTelegramConfigured, sendTelegramMessage } from "../lib/telegram";
+import { buildTelegramText } from "../lib/telegram-format";
 import { logger } from "../lib/logger";
 import { parseCard, runMonteCarloSim } from "../lib/poker";
 import { getFullAdvice } from "../lib/poker-gto";
@@ -29,26 +30,6 @@ const router: IRouter = Router();
 
 // Dedup — same logic as analysis.ts: only Telegram when decision changes
 let lastSentKey: string | null = null;
-
-const suitSym: Record<string, string> = { h: "♥", d: "♦", c: "♣", s: "♠" };
-function fmtCard(c: string): string {
-  const rank = c.slice(0, -1);
-  const suit = c.slice(-1);
-  return `${rank === "T" ? "10" : rank}${suitSym[suit] ?? suit}`;
-}
-
-function buildTelegramText(body: ReturnType<typeof buildResult>): string {
-  const hole = body.holeCards.map(fmtCard).join(" ");
-  const board = body.boardCards.length ? body.boardCards.map(fmtCard).join(" ") : "префлоп";
-  const lines = [
-    `<b>${body.displayText}</b>${body.sizing ? ` (${body.sizing})` : ""}`,
-    `Карты: ${hole} | Борд: ${board}`,
-    `Win: ${Math.round(body.equity * 100)}%${body.potOdds != null ? ` · Пот-оддс: ${Math.round(body.potOdds * 100)}%` : ""}`,
-  ];
-  if (body.bluffRead?.label) lines.push(`Read виллана: ${body.bluffRead.label}`);
-  if (body.details.length) lines.push("", ...body.details.slice(0, 4).map((d) => `▸ ${d}`));
-  return lines.join("\n");
-}
 
 function buildResult(raw: {
   holeCards: string[];
@@ -142,7 +123,7 @@ router.post("/python/scan", (req, res) => {
       "python/scan: analysis complete",
     );
 
-    res.json({ ok: true, action: result.displayText, equity: result.equity, details: result.details });
+    res.json({ ok: true, action: result.displayText, equity: result.equity, tg: buildTelegramText(result) });
   } catch (err: any) {
     logger.error({ err }, "python/scan: GTO engine error");
     res.status(500).json({ error: err?.message ?? "GTO analysis failed" });
