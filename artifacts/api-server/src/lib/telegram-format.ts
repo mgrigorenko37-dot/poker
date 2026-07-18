@@ -1,14 +1,21 @@
 /**
- * Telegram message formatter — ultra-compact, instant-readable at a glance.
+ * Telegram message formatter — максимально информативно за минимум строк.
  *
- * Goal: player must understand what to do in under 1 second.
- * Format:
- *   🟢 CALL
- *   A♥ K♦  ·  2♣ 7♥ Q♦
- *   Win 24%
+ * Игрок должен понять что делать за < 1 секунды. Формат:
  *
- * For a raise the sizing is on the same line as the action.
- * Nothing else — no EV, no MDF, no Read, no details bullet list.
+ *   🔺 RAISE  2.5BB
+ *   A♥ K♦  ·  префлоп  ·  BTN  4p
+ *   Win 67%
+ *   Агрессор: UTG (~15% рук)
+ *
+ *   🟢 CALL  (колл ≈1.20)
+ *   A♥ K♦  ·  J♥ 4♠ 2♣ 10♥  ·  CO  3p
+ *   Win 58%  ·  пот-оддс 24%
+ *   Flush draw — 9 аутов (37% до ривера)
+ *
+ *   🔻 FOLD
+ *   7♥ 2♦  ·  J♥ 4♠ 2♣ 10♥ 9♦  ·  BB  5p
+ *   Win 14%  ·  пот-оддс 33%
  */
 
 const SUIT_SYM: Record<string, string> = { h: "♥", d: "♦", c: "♣", s: "♠" };
@@ -22,9 +29,9 @@ function fmtCard(c: string): string {
 const ACTION_EMOJI: Record<string, string> = {
   RAISE:  "🔺",
   "3BET": "🔺",
-  "BET":  "🔺",
-  "BET (полублеф)":    "🔺",
-  "RAISE (полублеф)":  "🔺",
+  BET:    "🔺",
+  "BET (полублеф)":   "🔺",
+  "RAISE (полублеф)": "🔺",
   CALL:   "🟢",
   CHECK:  "⚪",
   FOLD:   "🔻",
@@ -33,26 +40,84 @@ const ACTION_EMOJI: Record<string, string> = {
 };
 
 export function buildTelegramText(body: {
-  holeCards:   string[];
-  boardCards:  string[];
+  holeCards:    string[];
+  boardCards?:  string[];
   displayText?: string;
-  action?:     string;
-  sizing?:     string | null;
-  equity?:     number;
+  action?:      string;
+  sizing?:      string | null;
+  equity?:      number;
+  // расширенные поля — передаются из полного результата анализа
+  potOdds?:     number | null;
+  position?:    string;
+  players?:     number;
+  potSize?:     number;
+  betToCall?:   number;
+  draws?: {
+    flushDraw: boolean;
+    oesd:      boolean;
+    gutshot:   boolean;
+    totalOuts: number;
+    equityRiver: number;
+    equityTurn:  number;
+  } | null;
+  details?: string[];
 }): string {
-  const action   = body.displayText ?? body.action ?? "?";
-  const emoji    = ACTION_EMOJI[action] ?? "❓";
-  const sizing   = body.sizing ? `  ${body.sizing}` : "";
-  const winPct   = Math.round((body.equity ?? 0) * 100);
+  const action  = body.displayText ?? body.action ?? "?";
+  const emoji   = ACTION_EMOJI[action] ?? "❓";
+  const winPct  = Math.round((body.equity ?? 0) * 100);
+  const board   = body.boardCards ?? [];
+  const isPreflop = board.length === 0;
 
-  const hole  = body.holeCards.map(fmtCard).join(" ");
-  const board = body.boardCards?.length
-    ? body.boardCards.map(fmtCard).join(" ")
-    : "префлоп";
+  // ── Строка 1: действие + сайзинг ────────────────────────────────────────────
+  let sizingStr = "";
+  if (body.sizing) {
+    sizingStr = `  ${body.sizing}`;
+  }
+  // Для колла добавляем сумму в $ если известна
+  if ((action === "CALL") && body.betToCall && body.betToCall > 0) {
+    sizingStr += `  (колл ≈${body.betToCall.toFixed(2)})`;
+  }
+  const line1 = `${emoji} <b>${action}</b>${sizingStr}`;
 
-  return [
-    `${emoji} <b>${action}</b>${sizing}`,
-    `${hole}  ·  ${board}`,
-    `Win ${winPct}%`,
-  ].join("\n");
+  // ── Строка 2: карты + позиция + число игроков ────────────────────────────────
+  const holeStr  = body.holeCards.map(fmtCard).join(" ");
+  const boardStr = isPreflop ? "префлоп" : board.map(fmtCard).join(" ");
+  const posStr   = body.position ? `  ·  ${body.position}` : "";
+  const playersStr = body.players && body.players > 1 ? `  ${body.players}p` : "";
+  const line2 = `${holeStr}  ·  ${boardStr}${posStr}${playersStr}`;
+
+  // ── Строка 3: win% + пот-оддс ────────────────────────────────────────────────
+  const winStr   = `Win ${winPct}%`;
+  const oddsStr  = (body.potOdds && body.potOdds > 0)
+    ? `  ·  пот-оддс ${Math.round(body.potOdds * 100)}%`
+    : "";
+  const line3 = `${winStr}${oddsStr}`;
+
+  // ── Строка 4 (опционально): ключевая инфо ────────────────────────────────────
+  // Приоритет: дро → агрессор (из details) → пусто
+  let line4 = "";
+
+  if (body.draws) {
+    const d = body.draws;
+    if (d.flushDraw && (d.oesd || d.gutshot)) {
+      line4 = `Комбо-дро — ${d.totalOuts} аутов (${Math.round(d.equityRiver)}% до ривера)`;
+    } else if (d.flushDraw) {
+      line4 = `Flush draw — ${d.totalOuts} аутов (${Math.round(d.equityRiver)}% до ривера)`;
+    } else if (d.oesd) {
+      line4 = `OESD — ${d.totalOuts} аутов (${Math.round(d.equityRiver)}% до ривера)`;
+    } else if (d.gutshot) {
+      line4 = `Gutshot — ${d.totalOuts} аутов (${Math.round(d.equityRiver)}% до ривера)`;
+    }
+  }
+
+  // Если нет дро — ищем строку об агрессоре или первую деталь из preflopа
+  if (!line4 && body.details?.length) {
+    const aggNote = body.details.find(d => d.startsWith("Агрессор:"));
+    if (aggNote) line4 = aggNote;
+  }
+
+  const lines = [line1, line2, line3];
+  if (line4) lines.push(line4);
+
+  return lines.join("\n");
 }
