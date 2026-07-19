@@ -25,6 +25,7 @@ import { parseCard, runMonteCarloSim } from "../lib/poker";
 import { getFullAdvice } from "../lib/poker-gto";
 import { updateHandState, resetHandState, getHandHistory, type TelegramTrigger } from "../lib/hand-state";
 import { narrowVillainRange } from "../lib/range-narrower";
+import { getOpponentSummary } from "../lib/opponent-profile";
 
 const router: IRouter = Router();
 
@@ -264,8 +265,9 @@ router.post("/vision/scan", async (req, res) => {
     lastAction,
   );
   const handHistory = getHandHistory();
+  const opponentProfile = getOpponentSummary();
   if (trigger) {
-    fireTelegram({ ...output, handHistory }, trigger);
+    fireTelegram({ ...output, handHistory, opponentProfile }, trigger);
   }
 
   logger.info(

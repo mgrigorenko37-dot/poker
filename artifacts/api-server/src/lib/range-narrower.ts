@@ -19,6 +19,7 @@
 
 import { getRangeHandKeys, rangeKeysToPct } from './poker';
 import type { VillainAction, Street } from './hand-state';
+import { getOpponentStats } from './opponent-profile';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -204,23 +205,41 @@ export function narrowVillainRange(
   currentStreet: Street | 'waiting' | 'ended',
 ): NarrowedRange {
 
+  // ── Phase 4: pull session VPIP/PFR to seed the prior ─────────────────────
+  const sessionStats = getOpponentStats();
+  let sessionAdjust = 0; // equity threshold modifier from session data
+  if (sessionStats.handsPlayed >= 5) {
+    const vpip = (sessionStats.vpipHands / sessionStats.handsPlayed) * 100;
+    const pfr  = (sessionStats.pfrHands  / sessionStats.handsPlayed) * 100;
+    // Tight player (VPIP<20, PFR>12) → narrower range → higher threshold
+    if (vpip < 20 && pfr > 12)  sessionAdjust = -6;
+    // Loose passive (VPIP>45, PFR<15) → wider range → lower threshold
+    else if (vpip > 45 && pfr < 15) sessionAdjust = +8;
+    // Loose aggro (VPIP>30, PFR>20) → medium-wide
+    else if (vpip > 30 && pfr > 20) sessionAdjust = +3;
+  }
+
   if (actions.length === 0) {
-    // No data yet — use default medium range
-    const keys = getRangeHandKeys(THRESHOLD_MEDIUM);
+    // No hand actions yet — use session-adjusted prior
+    const baseThreshold = Math.max(THRESHOLD_VERY_WIDE,
+      Math.min(THRESHOLD_VERY_TIGHT, THRESHOLD_MEDIUM + sessionAdjust));
+    const keys = getRangeHandKeys(baseThreshold);
     const pct  = rangeKeysToPct(keys);
     return {
       rangeKeys: keys,
       rangePct: pct,
-      description: 'Диапазон неизвестен — данных нет',
-      categories: defaultCategories(THRESHOLD_MEDIUM),
+      description: sessionStats.handsPlayed >= 5
+        ? `Нет данных по руке · сессионный профиль: ${rangeLabel(baseThreshold, pct)}`
+        : 'Диапазон неизвестен — данных нет',
+      categories: defaultCategories(baseThreshold),
       confidence: 'low',
       tendencyNote: '',
     };
   }
 
-  // Start from medium prior
+  // Start from session-adjusted prior
   const rState: RangeState = {
-    threshold: THRESHOLD_MEDIUM,
+    threshold: THRESHOLD_MEDIUM + sessionAdjust,
     dataPoints: 0,
     tendencies: [],
     categories: [],

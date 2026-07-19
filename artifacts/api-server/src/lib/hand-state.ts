@@ -14,7 +14,13 @@
  *     1. lastAction text read by Gemini from the screen HUD
  *     2. Inferred from betToCall / potSize context
  *   Exports getHandHistory() for the analysis + Telegram formatter.
+ *
+ * Phase 4 — session opponent profile:
+ *   On each new hand, commits the completed hand's action log to opponent-profile.ts
+ *   so VPIP/PFR/AF/C-bet stats accumulate across the session.
  */
+
+import { commitHandToProfile, resetOpponentProfile } from './opponent-profile';
 
 export type Street = 'preflop' | 'flop' | 'turn' | 'river';
 
@@ -195,6 +201,11 @@ export function updateHandState(
     state.holeKey !== holeKey;
 
   if (isNewHand) {
+    // Commit completed hand to session opponent profile before clearing log
+    if (state.actionLog.length > 0) {
+      commitHandToProfile([...state.actionLog]);
+    }
+
     state.handId += 1;
     state.phase = 'preflop';
     state.holeKey = holeKey;
@@ -289,6 +300,8 @@ export function resetHandState(): void {
   state.handId = 0;
   state.actionLog = [];
   state.lastRecordedStreet = null;
+  // Phase 4: reset session opponent profile too
+  resetOpponentProfile();
 }
 
 export function getHandState(): Readonly<HandStateData> {

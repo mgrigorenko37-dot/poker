@@ -76,6 +76,17 @@ export function buildTelegramText(body: {
     tendencyNote: string;
     rangePct: number;
   } | null;
+  opponentProfile?: {
+    handsPlayed: number;
+    vpip: number;
+    pfr: number;
+    af: number;
+    cbet: number;
+    ftCbet: number;
+    confidence: 'high' | 'medium' | 'low';
+    playerType: string;
+    exploitNote: string;
+  } | null;
 }): string {
   const action  = body.displayText ?? body.action ?? "?";
   const emoji   = ACTION_EMOJI[action] ?? "❓";
@@ -162,6 +173,21 @@ export function buildTelegramText(body: {
     if (vr.tendencyNote) {
       lines.push(`💡 <i>${vr.tendencyNote}</i>`);
     }
+  }
+
+  // ── HUD оппонента (этап 4) ────────────────────────────────────────────────
+  // Показываем только когда накоплено достаточно рук и это смена улицы/новая рука.
+  if (body.opponentProfile && body.opponentProfile.handsPlayed >= 3) {
+    const op = body.opponentProfile;
+    const reliable = op.confidence === 'high';
+    const prefix = reliable ? '' : '~';
+    // HUD строка: VPIP/PFR  AF  CB/FtCB
+    const hudLine = `📊 <b>${op.playerType}</b>  (${op.handsPlayed}р) · VPIP ${prefix}${op.vpip}% · PFR ${prefix}${op.pfr}% · AF ${prefix}${op.af}`;
+    const cbLine  = op.cbet > 0
+      ? `   CB ${prefix}${op.cbet}%  FtCB ${prefix}${op.ftCbet}%`
+      : '';
+    lines.push(hudLine + cbLine);
+    lines.push(`⚡ <i>${op.exploitNote}</i>`);
   }
 
   return lines.join("\n");
