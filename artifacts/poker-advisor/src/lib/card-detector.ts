@@ -301,6 +301,13 @@ export interface AutoDetectResult {
   holeZones: [CardZone, CardZone] | null;
   /** 0–5 board cards in the center of the table */
   boardZones: CardZone[];
+  /** Diagnostic counters — how many column runs were found before maxCards cap */
+  debug: {
+    holeRunsTotal: number;   // runs found in hole band (before capping at 2)
+    boardRunsTotal: number;  // runs found in board band (before capping at 5)
+    shTable: number;         // scaled table height used
+    shFull: number;          // scaled extended height (table + below)
+  };
 }
 
 /**
@@ -339,15 +346,16 @@ export function autoDetectCards(
 
   // ── Column projection in an absolute-pixel band ──────────────────────────
   // y0px / y1px are rows in the SCALED canvas (not fractions).
+  // Returns { zones, totalRuns } — totalRuns is count before the maxCards cap
   function findCardsInBandPx(
     y0px: number,
     y1px: number,
     maxCards: number,
-  ): CardZone[] {
+  ): { zones: CardZone[]; totalRuns: number } {
     const y0 = Math.max(0, y0px);
     const y1 = Math.min(sh - 1, y1px);
     const bh = y1 - y0;
-    if (bh < 4) return [];
+    if (bh < 4) return { zones: [], totalRuns: 0 };
 
     // Column brightness score: fraction of bright pixels in this band column
     const colScore = new Float32Array(sw);
@@ -383,7 +391,9 @@ export function autoDetectCards(
       }
     }
 
-    if (runs.length === 0) return [];
+    if (runs.length === 0) return { zones: [], totalRuns: 0 };
+
+    const totalRuns = runs.length; // before cap
 
     // Sort by score sum (brightest first) and take top maxCards
     const scored = runs.map(r => {
@@ -395,7 +405,7 @@ export function autoDetectCards(
     // Re-sort left-to-right
     scored.sort((a, b) => a.x0 - b.x0);
 
-    return scored.map(r => {
+    const zones = scored.map(r => {
       const cx_s = (r.x0 + r.x1) / 2;
       const cw_s = r.x1 - r.x0;
 
@@ -418,7 +428,6 @@ export function autoDetectCards(
       const cy_s = yCount > 0 ? ySum / yCount : (y0 + y1) / 2;
       const ch_s = yCount > 0 ? Math.max(yMax - yMin + 2, cw_s * 1.3) : cw_s * 1.4;
 
-      // Scale back to original video coords
       return {
         cx: tx + cx_s / scale,
         cy: ty + cy_s / scale,
@@ -426,10 +435,12 @@ export function autoDetectCards(
         h:  ch_s / scale,
       } as CardZone;
     });
+
+    return { zones, totalRuns };
   }
 
   // Board cards: search middle of the TABLE only (fractions of shTable)
-  const boardRaw = findCardsInBandPx(
+  const boardResult = findCardsInBandPx(
     Math.round(0.22 * shTable),
     Math.round(0.70 * shTable),
     5,
@@ -438,18 +449,27 @@ export function autoDetectCards(
   // Hole cards: search from mid-table ALL THE WAY to canvas bottom.
   // This handles both standard layouts (cards on felt) and Pokerist-style
   // (cards in the wooden border below the green oval).
-  const holeRaw = findCardsInBandPx(
+  const holeResult = findCardsInBandPx(
     Math.round(0.50 * shTable),
     sh, // extends to canvas bottom
     2,
   );
 
   const holeZones: [CardZone, CardZone] | null =
-    holeRaw.length === 2
-      ? [holeRaw[0], holeRaw[1]]
+    holeResult.zones.length === 2
+      ? [holeResult.zones[0], holeResult.zones[1]]
       : null;
 
-  return { holeZones, boardZones: boardRaw };
+  return {
+    holeZones,
+    boardZones: boardResult.zones,
+    debug: {
+      holeRunsTotal:  holeResult.totalRuns,
+      boardRunsTotal: boardResult.totalRuns,
+      shTable,
+      shFull: sh,
+    },
+  };
 }
 
 // ── Calibration helpers (kept for manual override if needed) ──────────────────

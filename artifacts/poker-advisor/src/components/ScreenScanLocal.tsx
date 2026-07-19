@@ -161,10 +161,15 @@ export function ScreenScanLocal() {
 
     // Auto-detect card positions (no calibration)
     const templates = templatesRef.current!;
-    const { holeZones, boardZones } = autoDetectCards(canvas, bounds);
+    const { holeZones, boardZones, debug } = autoDetectCards(canvas, bounds);
 
     if (!holeZones) {
-      setScanStatus(`Стол${bounds ? '' : ' не найден'}. Карт не видно — жди раздачи или выбери окно с покером`);
+      const tableStr = bounds ? `✅ Стол (${bounds.w}×${bounds.h}px)` : '❌ Стол не найден';
+      const holeStr  = debug.holeRunsTotal === 0
+        ? '❌ hole-зон: 0'
+        : `⚠ hole-зон: ${debug.holeRunsTotal} (нужно 2)`;
+      const boardStr = `board-зон: ${debug.boardRunsTotal}`;
+      setScanStatus(`${tableStr} | ${holeStr} | ${boardStr}${debug.holeRunsTotal === 0 ? ' — убедись что идёт раздача' : ' — слишком много/мало зон'}`);
       return;
     }
 
