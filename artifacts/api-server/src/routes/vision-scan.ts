@@ -53,8 +53,8 @@ lastAction=last visible action text from HUD/chat log (e.g. "raised to 12", "che
 stackSize=hero effective stack in chips (the smaller of the two stacks in play), null if not visible.
 bbSize=big blind size in chips (e.g. 5, 10, 25), null if not visible.`;
 
-// Models to try in order (fastest first)
-const MODELS = ["gemini-3.1-flash-lite", "gemini-3-flash-preview"];
+// Models to try in order (fastest first — standard Google API names)
+const MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
