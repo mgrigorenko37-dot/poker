@@ -53,8 +53,42 @@ lastAction=last visible action text from HUD/chat log (e.g. "raised to 12", "che
 stackSize=hero effective stack in chips (the smaller of the two stacks in play), null if not visible.
 bbSize=big blind size in chips (e.g. 5, 10, 25), null if not visible.`;
 
-// Models to try in order (fastest first — standard Google API names)
-const MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash"];
+// Models via SDK (v1beta). gemini-1.5-flash is NOT available in v1beta — use REST fallback below.
+const SDK_MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash"];
+
+// ── v1 REST fallback: gemini-1.5-flash via direct fetch ───────────────────────
+// The @google/generative-ai SDK uses v1beta where gemini-1.5-flash is unavailable.
+// The v1 REST endpoint supports it and has a separate free-tier quota bucket.
+async function callGemini15FlashV1(imageBase64: string, signal: AbortSignal): Promise<string> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) throw new Error("GEMINI_API_KEY is not set");
+
+  const body = {
+    contents: [{
+      parts: [
+        { inline_data: { mime_type: "image/jpeg", data: imageBase64 } },
+        { text: VISION_PROMPT },
+      ],
+    }],
+    generationConfig: { temperature: 0, maxOutputTokens: 256 },
+  };
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${key}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal },
+  );
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    const err: any = new Error(`[v1 REST] gemini-1.5-flash: ${res.status} ${res.statusText}`);
+    err.status = res.status;
+    err.body = errText;
+    throw err;
+  }
+
+  const data = await res.json() as any;
+  return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -87,6 +121,10 @@ router.post("/vision/scan", async (req, res) => {
     return;
   }
 
+  let accumulated = "";
+  let parsed: any = null;
+
+  // ── Step 1: try SDK models (v1beta) ───────────────────────────────────────
   const contents = [
     {
       role: "user",
@@ -97,14 +135,9 @@ router.post("/vision/scan", async (req, res) => {
     },
   ];
 
-  let accumulated = "";
-  let parsed: any = null;
-
-  // Try models with fallback
-  for (let attempt = 0; attempt < MODELS.length; attempt++) {
-    const modelName = MODELS[attempt];
-
-    // 4-second hard timeout per attempt
+  let sdkFailed = false;
+  for (let attempt = 0; attempt < SDK_MODELS.length; attempt++) {
+    const modelName = SDK_MODELS[attempt];
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4000);
     accumulated = "";
@@ -116,49 +149,50 @@ router.post("/vision/scan", async (req, res) => {
         { contents },
         { signal: controller.signal } as any,
       );
-
-      // ── Stream loop ────────────────────────────────────────────────────────
       for await (const chunk of stream.stream) {
         accumulated += chunk.text();
-
-        const clean = accumulated
-          .replace(/^```(?:json)?\s*/i, "")
-          .replace(/```\s*$/, "")
-          .trim();
-
-        // ── Try full JSON parse ────────────────────────────────────────────
-        try {
-          parsed = JSON.parse(clean);
-          break; // complete JSON received — exit stream loop early
-        } catch { /* keep accumulating */ }
+        const clean = accumulated.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+        try { parsed = JSON.parse(clean); break; } catch { /* keep accumulating */ }
       }
-
       clearTimeout(timer);
-      break; // success — don't try next model
+      break; // success
     } catch (err: any) {
       clearTimeout(timer);
       const status = err?.status ?? 0;
       const isRetryable = status === 503 || status === 429 || err?.name === "AbortError";
-      if (isRetryable && attempt < MODELS.length - 1) {
+      if (isRetryable && attempt < SDK_MODELS.length - 1) {
         logger.warn({ model: modelName, status }, "vision/scan: retrying with fallback model");
-        // Longer delay for rate-limit (429) to let the quota window reset
         const delay = status === 429 ? 1500 : 300;
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
-      // All models failed — return 503, don't leak Gemini's status code
-      logger.error({ err, model: modelName, status }, "vision/scan: all models failed");
-      res.status(503).json({ ok: false, error: "Vision API unavailable, try again", geminiStatus: status });
+      logger.warn({ model: modelName, status }, "vision/scan: SDK models exhausted, trying v1 REST");
+      sdkFailed = true;
+      break;
+    }
+  }
+
+  // ── Step 2: v1 REST fallback — gemini-1.5-flash ───────────────────────────
+  // Separate quota bucket from v1beta; works on free tier where 2.0 models don't.
+  if (sdkFailed && !parsed) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    try {
+      const raw = await callGemini15FlashV1(image, controller.signal);
+      clearTimeout(timer);
+      accumulated = raw;
+    } catch (err: any) {
+      clearTimeout(timer);
+      const status = err?.status ?? 0;
+      logger.error({ err, status }, "vision/scan: all models failed including v1 REST");
+      res.status(503).json({ ok: false, error: "Vision API unavailable — all models rate-limited or unavailable", geminiStatus: status });
       return;
     }
   }
 
-  // Final JSON parse if loop didn't succeed (accumulated rest of stream)
+  // Final JSON parse
   if (!parsed) {
-    const clean = accumulated
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/```\s*$/, "")
-      .trim();
+    const clean = accumulated.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
     try {
       parsed = JSON.parse(clean);
     } catch {
