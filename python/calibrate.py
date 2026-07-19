@@ -104,8 +104,8 @@ def _draw_card_overlay():
         msg = f"Кликни: {CARD_STEPS[_card_step][1]}"
         cv2.putText(vis, msg, (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (255, 220, 0), 2)
     else:
-        cv2.putText(vis, "Карты готовы!  Нажми S чтобы перейти к деньгам",
-                    (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 80), 2)
+        cv2.putText(vis, "Карты готовы!  Нажми ENTER чтобы перейти к деньгам",
+                    (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 80), 2)
     cv2.imshow(WIN_NAME, vis)
 
 def run_card_phase() -> list[dict]:
@@ -119,21 +119,22 @@ def run_card_phase() -> list[dict]:
     _draw_card_overlay()
 
     print("\n▶ Фаза 1 — КАРТЫ")
-    print("  Кликай по ЦЕНТРУ карты.  Q = пропустить борд4/5,  R = сброс,  S = готово\n")
+    print("  Кликай по ЦЕНТРУ карты.")
+    print("  ПРОБЕЛ = пропустить борд4/5,  BACKSPACE = сброс,  ENTER = готово\n")
 
     while True:
         key = cv2.waitKey(50) & 0xFF
-        if key in (ord('q'), ord('Q')) and _card_step in (5, 6):
+        if key == 32 and _card_step in (5, 6):   # Space = пропустить
             print(f"  — {CARD_STEPS[_card_step][0]}: пропущен")
             _card_step += 1
             _draw_card_overlay()
-        elif key in (ord('r'), ord('R')):
+        elif key == 8:   # Backspace = сброс
             _card_points.clear()
             _card_step = 0
             _frame = capture_screen()
             _draw_card_overlay()
             print("  ↺ Сброс")
-        elif key in (ord('s'), ord('S')):
+        elif key == 13:   # Enter = сохранить
             if len(_card_points) < 5:
                 print(f"  ⚠️  Нужно минимум 5 точек (есть {len(_card_points)})")
             else:
@@ -208,7 +209,7 @@ def _draw_money_overlay():
         msg = f"Зажми и обведи: {MONEY_STEPS[_money_step][1]}"
         cv2.putText(vis, msg, (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 220, 0), 2)
     else:
-        cv2.putText(vis, "Готово! Нажми S для сохранения",
+        cv2.putText(vis, "Готово! Нажми ENTER для сохранения",
                     (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 80), 2)
 
     cv2.imshow(WIN_NAME, vis)
@@ -223,20 +224,20 @@ def run_money_phase() -> dict:
 
     print("\n▶ Фаза 2 — ДЕНЬГИ")
     print("  Зажми ЛКМ и обведи прямоугольником число (банк / колл).")
-    print("  Q = пропустить колл,  R = сброс фазы,  S = сохранить и выйти\n")
+    print("  ПРОБЕЛ = пропустить колл,  BACKSPACE = сброс,  ENTER = сохранить\n")
 
     while True:
         key = cv2.waitKey(50) & 0xFF
-        if key in (ord('q'), ord('Q')) and _money_step == 1:   # пропустить bet
+        if key == 32 and _money_step == 1:   # Space = пропустить bet
             print("  — bet: пропущен")
             _money_step += 1
             _draw_money_overlay()
-        elif key in (ord('r'), ord('R')):
+        elif key == 8:   # Backspace = сброс
             _money_regions.clear()
             _money_step = 0
             _draw_money_overlay()
             print("  ↺ Сброс денежных регионов")
-        elif key in (ord('s'), ord('S')):
+        elif key == 13:   # Enter = сохранить
             if "pot" not in _money_regions:
                 print("  ⚠️  Нужно обвести хотя бы банк (pot)")
             else:
@@ -287,8 +288,8 @@ def _draw_seat_overlay():
         msg = f"Кликни: {SEAT_STEPS[_seat_step][1]}"
         cv2.putText(vis, msg, (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 220, 0), 2)
     else:
-        cv2.putText(vis, f"Все {len(_seat_points)} мест готовы!  Нажми S для сохранения",
-                    (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 80), 2)
+        cv2.putText(vis, f"Все {len(_seat_points)} мест готовы!  Нажми ENTER для сохранения",
+                    (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 80), 2)
     cv2.imshow(WIN_NAME, vis)
 
 def run_seat_phase() -> list[dict]:
@@ -301,11 +302,11 @@ def run_seat_phase() -> list[dict]:
 
     print("\n▶ Фаза 3 — МЕСТА ОППОНЕНТОВ")
     print("  Кликай по ЦЕНТРУ зоны карт рубашкой каждого оппонента.")
-    print("  Q = пропустить место,  R = сброс,  S = сохранить и выйти\n")
+    print("  ПРОБЕЛ = пропустить место,  BACKSPACE = сброс,  ENTER = сохранить\n")
 
     while True:
         key = cv2.waitKey(50) & 0xFF
-        if key in (ord('q'), ord('Q')) and _seat_step >= 1:
+        if key == 32 and _seat_step >= 1:   # Space = пропустить
             label = SEAT_STEPS[_seat_step][0]
             print(f"  — {label}: пропущен")
             _seat_step += 1
@@ -313,12 +314,12 @@ def run_seat_phase() -> list[dict]:
                 _draw_seat_overlay()
                 break
             _draw_seat_overlay()
-        elif key in (ord('r'), ord('R')):
+        elif key == 8:   # Backspace = сброс
             _seat_points.clear()
             _seat_step = 0
             _draw_seat_overlay()
             print("  ↺ Сброс мест")
-        elif key in (ord('s'), ord('S')):
+        elif key == 13:   # Enter = сохранить
             if len(_seat_points) < 1:
                 print("  ⚠️  Кликни хотя бы на 1 место оппонента")
             else:
@@ -363,11 +364,11 @@ def _draw_dealer_overlay(cx: float = None, cy: float = None):
         cv2.circle(vis, (px, py), 14, (0, 180, 255), 2)
         cv2.putText(vis, "D", (px + 16, py - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 180, 255), 2)
-        cv2.putText(vis, "Шаблон сохранён! Нажми S для завершения",
+        cv2.putText(vis, "Шаблон сохранён! Нажми ENTER для завершения",
                     (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 80), 2)
     else:
-        cv2.putText(vis, "Кликни по центру кнопки D (дилер)  [Q = пропустить]",
-                    (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 220, 0), 2)
+        cv2.putText(vis, "Кликни по центру кнопки D (дилер)  [ПРОБЕЛ = пропустить]",
+                    (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 220, 0), 2)
     cv2.imshow(WIN_NAME, vis)
 
 def run_dealer_phase() -> bool:
@@ -380,14 +381,14 @@ def run_dealer_phase() -> bool:
 
     print("\n▶ Фаза 4 — КНОПКА ДИЛЕРА")
     print("  Кликни точно по центру фишки «D» за столом.")
-    print("  Q = пропустить (позиция останется ручной),  S = сохранить и выйти\n")
+    print("  ПРОБЕЛ = пропустить (позиция останется ручной),  ENTER = сохранить\n")
 
     while True:
         key = cv2.waitKey(50) & 0xFF
-        if key in (ord('q'), ord('Q')):
+        if key == 32:   # Space = пропустить
             print("  — Фаза 4 пропущена (позиция не будет определяться автоматически)")
             return False
-        elif key in (ord('s'), ord('S')):
+        elif key == 13:   # Enter = сохранить
             if not _dealer_clicked:
                 print("  ⚠️  Сначала кликни по кнопке D")
             else:
