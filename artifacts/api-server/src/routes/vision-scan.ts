@@ -53,8 +53,9 @@ lastAction=last visible action text from HUD/chat log (e.g. "raised to 12", "che
 stackSize=hero effective stack in chips (the smaller of the two stacks in play), null if not visible.
 bbSize=big blind size in chips (e.g. 5, 10, 25), null if not visible.`;
 
-// Models via SDK (v1beta). gemini-1.5-flash is NOT available in v1beta — use REST fallback below.
-const SDK_MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash"];
+// Models via SDK (v1beta) — ordered fastest/cheapest first.
+// gemini-2.5-flash-lite → gemini-2.5-flash → gemini-2.0-flash → gemini-2.0-flash-lite
+const SDK_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash-lite", "gemini-2.0-flash"];
 
 // ── v1 REST fallback: gemini-1.5-flash via direct fetch ───────────────────────
 // The @google/generative-ai SDK uses v1beta where gemini-1.5-flash is unavailable.
