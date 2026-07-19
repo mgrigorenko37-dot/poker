@@ -319,26 +319,33 @@ export function autoDetectCards(
   const tw = table?.w ?? canvas.width;
   const th = table?.h ?? canvas.height;
 
-  // Work at 1/4 scale for speed (~1 ms per call)
+  // Work at reduced scale for speed
   const scale = Math.min(1, 320 / tw);
   const sw = Math.round(tw * scale);
-  const sh = Math.round(th * scale);
+  const shTable = Math.round(th * scale); // table-only scaled height (used for board bands)
+
+  // Extend the crop all the way to the canvas bottom.
+  // Reason: clients like Pokerist render hole cards BELOW the green felt oval
+  // (in the wooden border / player zone), so if we only crop to the table
+  // bounds we miss the hole cards entirely.
+  const thExt = Math.max(th, canvas.height - ty); // from table top to screen bottom
+  const sh    = Math.round(thExt * scale);         // total scan height (extended)
 
   const tmp = document.createElement('canvas');
   tmp.width = sw; tmp.height = sh;
   const tctx = tmp.getContext('2d')!;
-  tctx.drawImage(canvas, tx, ty, tw, th, 0, 0, sw, sh);
+  tctx.drawImage(canvas, tx, ty, tw, thExt, 0, 0, sw, sh);
   const { data } = tctx.getImageData(0, 0, sw, sh);
 
-  // ── Column projection in a horizontal band ──────────────────────────────
-  // Returns CardZone[] (in ORIGINAL video pixel space) found in the band.
-  function findCardsInBand(
-    yStartPct: number, // 0..1 fraction of scaled table height
-    yEndPct:   number,
-    maxCards:  number,
+  // ── Column projection in an absolute-pixel band ──────────────────────────
+  // y0px / y1px are rows in the SCALED canvas (not fractions).
+  function findCardsInBandPx(
+    y0px: number,
+    y1px: number,
+    maxCards: number,
   ): CardZone[] {
-    const y0 = Math.round(yStartPct * sh);
-    const y1 = Math.round(yEndPct   * sh);
+    const y0 = Math.max(0, y0px);
+    const y1 = Math.min(sh - 1, y1px);
     const bh = y1 - y0;
     if (bh < 4) return [];
 
@@ -351,8 +358,7 @@ export function autoDetectCards(
         // "Card face" = light colored: not strongly green (felt), not dark
         const r = data[i], g = data[i + 1], b = data[i + 2];
         const lum = r * 0.299 + g * 0.587 + b * 0.114;
-        // Must be bright AND not strongly green (rules out the felt itself)
-        // Lowered from 175→145 to catch off-white/cream card faces common in many clients
+        // Lowered from 175→145 to catch off-white/cream card faces
         const isCardPixel = lum > 145 && !(g > r * 1.10 && g > b * 1.05);
         if (isCardPixel) bright++;
       }
@@ -360,9 +366,9 @@ export function autoDetectCards(
     }
 
     // Find connected runs of columns where score > threshold
-    const THRESH = 0.18; // lowered from 0.25 — 18% of band height (catches narrower/partially occluded cards)
-    const MIN_CARD_W = Math.round(sw * 0.03); // minimum card width (3% of table width)
-    const MAX_CARD_W = Math.round(sw * 0.26); // maximum card width (26% of table width, raised from 20%)
+    const THRESH = 0.18; // lowered from 0.25
+    const MIN_CARD_W = Math.round(sw * 0.03);
+    const MAX_CARD_W = Math.round(sw * 0.26); // raised from 0.20
 
     const runs: { x0: number; x1: number }[] = [];
     let inRun = false, runStart = 0;
@@ -409,8 +415,8 @@ export function autoDetectCards(
           }
         }
       }
-      const cy_s  = yCount > 0 ? ySum / yCount : (y0 + y1) / 2;
-      const ch_s  = yCount > 0 ? Math.max(yMax - yMin + 2, cw_s * 1.3) : cw_s * 1.4;
+      const cy_s = yCount > 0 ? ySum / yCount : (y0 + y1) / 2;
+      const ch_s = yCount > 0 ? Math.max(yMax - yMin + 2, cw_s * 1.3) : cw_s * 1.4;
 
       // Scale back to original video coords
       return {
@@ -422,10 +428,21 @@ export function autoDetectCards(
     });
   }
 
-  // Scan bottom section for hole cards — widened from 0.62–0.97 to catch more client layouts
-  const holeRaw  = findCardsInBand(0.55, 0.99, 2);
-  // Scan middle section for board cards — widened from 0.30–0.62
-  const boardRaw = findCardsInBand(0.22, 0.70, 5);
+  // Board cards: search middle of the TABLE only (fractions of shTable)
+  const boardRaw = findCardsInBandPx(
+    Math.round(0.22 * shTable),
+    Math.round(0.70 * shTable),
+    5,
+  );
+
+  // Hole cards: search from mid-table ALL THE WAY to canvas bottom.
+  // This handles both standard layouts (cards on felt) and Pokerist-style
+  // (cards in the wooden border below the green oval).
+  const holeRaw = findCardsInBandPx(
+    Math.round(0.50 * shTable),
+    sh, // extends to canvas bottom
+    2,
+  );
 
   const holeZones: [CardZone, CardZone] | null =
     holeRaw.length === 2
