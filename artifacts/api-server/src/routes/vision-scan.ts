@@ -26,6 +26,7 @@ import { getFullAdvice } from "../lib/poker-gto";
 import { updateHandState, resetHandState, getHandHistory, type TelegramTrigger } from "../lib/hand-state";
 import { narrowVillainRange } from "../lib/range-narrower";
 import { getOpponentSummary } from "../lib/opponent-profile";
+import { getSPRAdvice } from "../lib/spr-advice";
 
 const router: IRouter = Router();
 
@@ -44,10 +45,12 @@ function getGenAI(): GoogleGenerativeAI {
 // lastAction: most recent visible action text from the HUD/chat (e.g. "raised to 12", "checked", "called 5") — null if not visible.
 const VISION_PROMPT =
   `Poker screenshot. Return ONLY raw JSON (no markdown):
-{"holeCards":["Xr","Yr"],"boardCards":[],"potSize":null,"betToCall":null,"activePlayers":null,"lastAction":null}
+{"holeCards":["Xr","Yr"],"boardCards":[],"potSize":null,"betToCall":null,"activePlayers":null,"lastAction":null,"stackSize":null,"bbSize":null}
 holeCards=player 2 cards at bottom (null if hidden). boardCards=center 0-5.
 Ranks: A K Q J T 9-2. Suits: h d c s. E.g. "Ah","Ks","Td","2c".
-lastAction=last visible action text from HUD/chat log (e.g. "raised to 12", "checked", "called 5"), null if absent.`;
+lastAction=last visible action text from HUD/chat log (e.g. "raised to 12", "checked", "called 5"), null if absent.
+stackSize=hero effective stack in chips (the smaller of the two stacks in play), null if not visible.
+bbSize=big blind size in chips (e.g. 5, 10, 25), null if not visible.`;
 
 // Models to try in order (fastest first)
 const MODELS = ["gemini-3.1-flash-lite", "gemini-3-flash-preview"];
@@ -179,6 +182,10 @@ router.post("/vision/scan", async (req, res) => {
     typeof parsed.lastAction === "string" && parsed.lastAction.length > 0
       ? parsed.lastAction
       : null;
+  const detectedStack: number | null =
+    typeof parsed.stackSize === "number" && parsed.stackSize > 0 ? parsed.stackSize : null;
+  const detectedBB: number | null =
+    typeof parsed.bbSize === "number" && parsed.bbSize > 0 ? parsed.bbSize : null;
 
   if (holeStrings.length !== 2) {
     // Hole cards not visible → player may have folded; notify state machine
@@ -209,6 +216,10 @@ router.post("/vision/scan", async (req, res) => {
   const finalPot     = potSizeOverride ?? detectedPot ?? 0;
   const finalBet     = betToCallOverride ?? detectedBet ?? 0;
   const finalPlayers = Math.max(2, Math.min(9, detectedPlayers ?? players));
+
+  // ── SPR (Phase 5) ──────────────────────────────────────────────────────────
+  const isPreflop = board.length === 0;
+  const sprAdvice = getSPRAdvice(detectedStack, finalPot, detectedBB, isPreflop);
 
   // ── Range narrowing (Phase 3) ──────────────────────────────────────────────
   const currentHistory = getHandHistory();
@@ -247,6 +258,17 @@ router.post("/vision/scan", async (req, res) => {
       tendencyNote: narrowed.tendencyNote,
       rangePct: narrowed.rangePct,
     },
+    // Phase 5: SPR
+    sprAdvice: sprAdvice
+      ? {
+          spr: sprAdvice.spr,
+          zone: sprAdvice.zone,
+          commitment: sprAdvice.commitment,
+          strategy: sprAdvice.strategy,
+          emoji: sprAdvice.emoji,
+          stackBBs: sprAdvice.stackBBs,
+        }
+      : null,
     ts: Date.now(),
   };
 

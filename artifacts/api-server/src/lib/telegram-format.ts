@@ -87,6 +87,14 @@ export function buildTelegramText(body: {
     playerType: string;
     exploitNote: string;
   } | null;
+  sprAdvice?: {
+    spr: number;
+    zone: string;
+    commitment: string;
+    strategy: string;
+    emoji: string;
+    stackBBs: number | null;
+  } | null;
 }): string {
   const action  = body.displayText ?? body.action ?? "?";
   const emoji   = ACTION_EMOJI[action] ?? "❓";
@@ -173,6 +181,14 @@ export function buildTelegramText(body: {
     if (vr.tendencyNote) {
       lines.push(`💡 <i>${vr.tendencyNote}</i>`);
     }
+  }
+
+  // ── SPR (этап 5) ──────────────────────────────────────────────────────────
+  if (body.sprAdvice) {
+    const sp = body.sprAdvice;
+    const stackStr = sp.stackBBs ? ` · стэк ${sp.stackBBs}BB` : '';
+    const sprLabel  = sp.spr > 0 ? `SPR ${sp.spr}` : '';
+    lines.push(`${sp.emoji} ${sprLabel}${stackStr} — ${sp.commitment}`);
   }
 
   // ── HUD оппонента (этап 4) ────────────────────────────────────────────────
