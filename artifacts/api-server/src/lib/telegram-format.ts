@@ -95,6 +95,21 @@ export function buildTelegramText(body: {
     emoji: string;
     stackBBs: number | null;
   } | null;
+  boardTexture?: {
+    wetness: string;
+    label: string;
+    hasFlushDraw: boolean;
+    hasOESD: boolean;
+    hasGutshot: boolean;
+    isPaired: boolean;
+    isTripped: boolean;
+    isHighBoard: boolean;
+    heroConnection: number;
+    heroConnectionNote: string;
+    cbetInterpretation: string;
+    heroStrategyNote: string;
+    telegramLine: string;
+  } | null;
 }): string {
   const action  = body.displayText ?? body.action ?? "?";
   const emoji   = ACTION_EMOJI[action] ?? "❓";
@@ -204,6 +219,22 @@ export function buildTelegramText(body: {
       : '';
     lines.push(hudLine + cbLine);
     lines.push(`⚡ <i>${op.exploitNote}</i>`);
+  }
+
+  // ── Текстура доски (этап 6) ────────────────────────────────────────────────
+  if (body.boardTexture) {
+    const bt = body.boardTexture;
+    lines.push(`🎴 ${bt.telegramLine}`);
+    // Show c-bet interpretation only when villain is betting (betToCall > 0)
+    if (body.betToCall && body.betToCall > 0 && bt.cbetInterpretation) {
+      lines.push(`↪ <i>${bt.cbetInterpretation}</i>`);
+    }
+    // Show hero connection note when it's informative
+    if (bt.heroConnectionNote && bt.heroConnection >= 2) {
+      lines.push(`✅ <i>${bt.heroConnectionNote}</i>`);
+    } else if (bt.heroConnectionNote && bt.heroConnection === 0) {
+      lines.push(`⚠️ <i>${bt.heroConnectionNote}</i>`);
+    }
   }
 
   return lines.join("\n");

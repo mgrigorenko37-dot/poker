@@ -27,6 +27,7 @@ import { updateHandState, resetHandState, getHandHistory, type TelegramTrigger }
 import { narrowVillainRange } from "../lib/range-narrower";
 import { getOpponentSummary } from "../lib/opponent-profile";
 import { getSPRAdvice } from "../lib/spr-advice";
+import { getBoardTexture } from "../lib/board-texture";
 
 const router: IRouter = Router();
 
@@ -221,6 +222,11 @@ router.post("/vision/scan", async (req, res) => {
   const isPreflop = board.length === 0;
   const sprAdvice = getSPRAdvice(detectedStack, finalPot, detectedBB, isPreflop);
 
+  // ── Board texture (Phase 6) ────────────────────────────────────────────────
+  const betSizePct = finalPot > 0 && finalBet > 0
+    ? Math.round((finalBet / finalPot) * 100) : null;
+  const boardTexture = !isPreflop ? getBoardTexture(board, hole, betSizePct) : null;
+
   // ── Range narrowing (Phase 3) ──────────────────────────────────────────────
   const currentHistory = getHandHistory();
   const narrowed = narrowVillainRange(currentHistory.actions, currentHistory.street);
@@ -267,6 +273,27 @@ router.post("/vision/scan", async (req, res) => {
           strategy: sprAdvice.strategy,
           emoji: sprAdvice.emoji,
           stackBBs: sprAdvice.stackBBs,
+        }
+      : null,
+    // Phase 6: Board texture
+    boardTexture: boardTexture
+      ? {
+          wetness: boardTexture.wetness,
+          wetnessScore: boardTexture.wetnessScore,
+          label: boardTexture.label,
+          isMonotone: boardTexture.isMonotone,
+          hasFlushDraw: boardTexture.hasFlushDraw,
+          hasOESD: boardTexture.hasOESD,
+          hasGutshot: boardTexture.hasGutshot,
+          isPaired: boardTexture.isPaired,
+          isTripped: boardTexture.isTripped,
+          isHighBoard: boardTexture.isHighBoard,
+          isLowBoard: boardTexture.isLowBoard,
+          heroConnection: boardTexture.heroConnection,
+          heroConnectionNote: boardTexture.heroConnectionNote,
+          cbetInterpretation: boardTexture.cbetInterpretation,
+          heroStrategyNote: boardTexture.heroStrategyNote,
+          telegramLine: boardTexture.telegramLine,
         }
       : null,
     ts: Date.now(),
