@@ -9,6 +9,7 @@ import {
   type SimulationResult,
 } from './poker';
 import { getPushFoldAdvice } from './push-fold';
+import { getGreenlineRFIFreq, getGreenlineVsOpenFreqs, isGreenlineMixed } from './greenline';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -226,6 +227,10 @@ export interface PreflopFrequencies {
 
 // Core frequency table, keyed by hand string (e.g. "AKs") so it can drive
 // both the live advisor and the preflop chart from the same numbers.
+// Greenline chart data is preferred when available (per-hand lookup);
+// the percentile ramp is the fallback for hands not in the chart.
+// The aggressorPosition villain-range multiplier still applies on top of
+// greenline vs-open data to account for UTG vs BTN range width differences.
 export function getPreflopFrequencies(
   handKey: string,
   position: Position,
@@ -241,6 +246,18 @@ export function getPreflopFrequencies(
     // Wide opener (BTN 48%) → baseline → multiplier ≈ 1.
     const villainMult = getVillainRangeMultiplier(aggressorPosition);
 
+    // ── Greenline vs-open chart (preferred) ────────────────────────────────
+    const gl = getGreenlineVsOpenFreqs(handKey, position);
+    if (gl !== null) {
+      // Apply villain tightness: scale call frequency down vs tight openers.
+      // 3bet range stays the same (value 3bets don't depend on their range width).
+      const adjustedCall = Math.max(0, Math.min(gl.call, gl.call * villainMult));
+      const adjustedFold = Math.max(0, 1 - gl.raise - adjustedCall);
+      const isMixed = Math.max(gl.raise, adjustedCall, adjustedFold) < 0.8;
+      return { raise: gl.raise, call: adjustedCall, fold: adjustedFold, isMixed };
+    }
+
+    // ── Percentile fallback ─────────────────────────────────────────────────
     const valueThreeBetFreq = getThreeBetFrequency(percentile, position);
     // Adjust raw continue percentile threshold by villain tightness
     const adjustedPercentile = percentile / villainMult;
@@ -264,6 +281,15 @@ export function getPreflopFrequencies(
     return { raise, call: callFreq, fold, isMixed };
   }
 
+  // ── Greenline RFI chart (preferred) ──────────────────────────────────────
+  const glRFI = getGreenlineRFIFreq(handKey, position);
+  if (glRFI !== null) {
+    const fold = 1 - glRFI;
+    const isMixed = isGreenlineMixed(glRFI);
+    return { raise: glRFI, call: 0, fold, isMixed };
+  }
+
+  // ── Percentile fallback ───────────────────────────────────────────────────
   const raise = getRFIFrequency(percentile, position);
   const fold = 1 - raise;
   const isMixed = raise > 0.15 && raise < 0.85;

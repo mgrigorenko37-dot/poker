@@ -3,7 +3,7 @@
 - [Poker Terminal OCR reliability](poker-terminal-ocr-reliability.md) — safeguards against misread cards (dup-check, empty-region filter, 2-frame confirm, manual override) and what's still manual-only
 - [Artifact re-registration after GitHub import](artifact-reimport-registration.md) — listArtifacts()/workflows empty post-import despite artifact.toml existing; fix via verifyAndReplaceArtifactToml touch, not createArtifact
 - [Poker Terminal range-vs-range Monte Carlo](poker-terminal-range-vs-range.md) — villain dealt from a range, not "any two"; flat preflop-equity threshold has a known low-board blind spot
-- [Poker Terminal GTO preflop frequencies](poker-terminal-gto-preflop-frequencies.md) — mixed-frequency percentile ramp replacing hard equity cutoffs; hand-built approximation, not real solver data
+- [Poker Terminal GTO preflop frequencies](poker-terminal-gto-preflop-frequencies.md) — greenline per-hand chart now primary source (greenline.ts); percentile ramp kept as fallback; see file for integration pattern
 - [Poker Terminal push/fold short-stack tables](poker-terminal-push-fold.md) — Nash push/fold for ≤20BB in push-fold.ts; stackBBs threaded through getFullAdvice; ScreenScan auto-uses OCR stack
 - [Poker Terminal auto money/seats](poker-terminal-auto-money-and-seats.md) — opt-in OCR for pot/bet and pixel-based seat/fold detection, separate from mandatory card calibration; manual edit disables auto
 - [Poker Terminal OCR debug panel](poker-terminal-ocr-debug-panel.md) — togglable "what OCR sees" thumbnails to tell calibration/capture mismatch apart from real recognition bugs

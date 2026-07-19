@@ -9,6 +9,7 @@ import {
   type SimulationResult,
 } from './poker';
 import { getPushFoldAdvice } from './push-fold';
+import { getGreenlineRFIFreq, getGreenlineVsOpenFreqs, isGreenlineMixed } from './greenline';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -203,6 +204,8 @@ export interface PreflopFrequencies {
 
 // Core frequency table, keyed by hand string (e.g. "AKs") so it can drive
 // both the live advisor and the preflop chart from the same numbers.
+// Greenline chart data is preferred when available (per-hand lookup);
+// the percentile ramp is the fallback for hands not in the chart.
 export function getPreflopFrequencies(
   handKey: string,
   position: Position,
@@ -212,6 +215,14 @@ export function getPreflopFrequencies(
   const isSuited = handKey.endsWith('s');
 
   if (facingRaise) {
+    // ── Greenline vs-open chart (preferred) ──────────────────────────────────
+    const gl = getGreenlineVsOpenFreqs(handKey, position);
+    if (gl !== null) {
+      const isMixed = Math.max(gl.raise, gl.call, gl.fold) < 0.8;
+      return { raise: gl.raise, call: gl.call, fold: gl.fold, isMixed };
+    }
+
+    // ── Percentile fallback ───────────────────────────────────────────────────
     const valueThreeBetFreq = getThreeBetFrequency(percentile, position);
     const continueFreq = getContinueFrequency(percentile, position);
     const callFreq = Math.max(0, continueFreq - valueThreeBetFreq);
@@ -233,6 +244,15 @@ export function getPreflopFrequencies(
     return { raise, call: callFreq, fold, isMixed };
   }
 
+  // ── Greenline RFI chart (preferred) ────────────────────────────────────────
+  const glRFI = getGreenlineRFIFreq(handKey, position);
+  if (glRFI !== null) {
+    const fold = 1 - glRFI;
+    const isMixed = isGreenlineMixed(glRFI);
+    return { raise: glRFI, call: 0, fold, isMixed };
+  }
+
+  // ── Percentile fallback ─────────────────────────────────────────────────────
   const raise = getRFIFrequency(percentile, position);
   const fold = 1 - raise;
   const isMixed = raise > 0.15 && raise < 0.85;
