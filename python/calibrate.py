@@ -123,17 +123,17 @@ def run_card_phase() -> list[dict]:
 
     while True:
         key = cv2.waitKey(50) & 0xFF
-        if key == ord('q') and _card_step in (5, 6):
+        if key in (ord('q'), ord('Q')) and _card_step in (5, 6):
             print(f"  — {CARD_STEPS[_card_step][0]}: пропущен")
             _card_step += 1
             _draw_card_overlay()
-        elif key == ord('r'):
+        elif key in (ord('r'), ord('R')):
             _card_points.clear()
             _card_step = 0
             _frame = capture_screen()
             _draw_card_overlay()
             print("  ↺ Сброс")
-        elif key == ord('s'):
+        elif key in (ord('s'), ord('S')):
             if len(_card_points) < 5:
                 print(f"  ⚠️  Нужно минимум 5 точек (есть {len(_card_points)})")
             else:
@@ -227,16 +227,16 @@ def run_money_phase() -> dict:
 
     while True:
         key = cv2.waitKey(50) & 0xFF
-        if key == ord('q') and _money_step == 1:   # пропустить bet
+        if key in (ord('q'), ord('Q')) and _money_step == 1:   # пропустить bet
             print("  — bet: пропущен")
             _money_step += 1
             _draw_money_overlay()
-        elif key == ord('r'):
+        elif key in (ord('r'), ord('R')):
             _money_regions.clear()
             _money_step = 0
             _draw_money_overlay()
             print("  ↺ Сброс денежных регионов")
-        elif key == ord('s'):
+        elif key in (ord('s'), ord('S')):
             if "pot" not in _money_regions:
                 print("  ⚠️  Нужно обвести хотя бы банк (pot)")
             else:
@@ -305,7 +305,7 @@ def run_seat_phase() -> list[dict]:
 
     while True:
         key = cv2.waitKey(50) & 0xFF
-        if key == ord('q') and _seat_step >= 1:      # минимум 1, остальные можно пропустить
+        if key in (ord('q'), ord('Q')) and _seat_step >= 1:
             label = SEAT_STEPS[_seat_step][0]
             print(f"  — {label}: пропущен")
             _seat_step += 1
@@ -313,12 +313,12 @@ def run_seat_phase() -> list[dict]:
                 _draw_seat_overlay()
                 break
             _draw_seat_overlay()
-        elif key == ord('r'):
+        elif key in (ord('r'), ord('R')):
             _seat_points.clear()
             _seat_step = 0
             _draw_seat_overlay()
             print("  ↺ Сброс мест")
-        elif key == ord('s'):
+        elif key in (ord('s'), ord('S')):
             if len(_seat_points) < 1:
                 print("  ⚠️  Кликни хотя бы на 1 место оппонента")
             else:
@@ -384,10 +384,10 @@ def run_dealer_phase() -> bool:
 
     while True:
         key = cv2.waitKey(50) & 0xFF
-        if key == ord('q'):
+        if key in (ord('q'), ord('Q')):
             print("  — Фаза 4 пропущена (позиция не будет определяться автоматически)")
             return False
-        elif key == ord('s'):
+        elif key in (ord('s'), ord('S')):
             if not _dealer_clicked:
                 print("  ⚠️  Сначала кликни по кнопке D")
             else:
