@@ -294,7 +294,147 @@ export function detectCard(
   return finalRank + suit;
 }
 
-// ── Calibration helpers ───────────────────────────────────────────────────────
+// ── Auto card detection (no calibration) ─────────────────────────────────────
+
+export interface AutoDetectResult {
+  /** Two hole cards at the bottom of the table, or null if not visible */
+  holeZones: [CardZone, CardZone] | null;
+  /** 0–5 board cards in the center of the table */
+  boardZones: CardZone[];
+}
+
+/**
+ * Automatically find card positions by looking for white/light rectangles
+ * on the poker table. No calibration required — works on any client.
+ *
+ * @param canvas  Full-resolution video canvas (drawn from video element)
+ * @param table   Table bounds from green-pixel detection (or null → use full canvas)
+ */
+export function autoDetectCards(
+  canvas: HTMLCanvasElement,
+  table: { x: number; y: number; w: number; h: number } | null,
+): AutoDetectResult {
+  const tx = table?.x ?? 0;
+  const ty = table?.y ?? 0;
+  const tw = table?.w ?? canvas.width;
+  const th = table?.h ?? canvas.height;
+
+  // Work at 1/4 scale for speed (~1 ms per call)
+  const scale = Math.min(1, 320 / tw);
+  const sw = Math.round(tw * scale);
+  const sh = Math.round(th * scale);
+
+  const tmp = document.createElement('canvas');
+  tmp.width = sw; tmp.height = sh;
+  const tctx = tmp.getContext('2d')!;
+  tctx.drawImage(canvas, tx, ty, tw, th, 0, 0, sw, sh);
+  const { data } = tctx.getImageData(0, 0, sw, sh);
+
+  // ── Column projection in a horizontal band ──────────────────────────────
+  // Returns CardZone[] (in ORIGINAL video pixel space) found in the band.
+  function findCardsInBand(
+    yStartPct: number, // 0..1 fraction of scaled table height
+    yEndPct:   number,
+    maxCards:  number,
+  ): CardZone[] {
+    const y0 = Math.round(yStartPct * sh);
+    const y1 = Math.round(yEndPct   * sh);
+    const bh = y1 - y0;
+    if (bh < 4) return [];
+
+    // Column brightness score: fraction of bright pixels in this band column
+    const colScore = new Float32Array(sw);
+    for (let x = 0; x < sw; x++) {
+      let bright = 0;
+      for (let y = y0; y < y1; y++) {
+        const i = (y * sw + x) * 4;
+        // "Card face" = light colored: not strongly green (felt), not dark
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        const lum = r * 0.299 + g * 0.587 + b * 0.114;
+        // Must be bright AND not strongly green (rules out the felt itself)
+        const isCardPixel = lum > 175 && !(g > r * 1.15 && g > b * 1.10);
+        if (isCardPixel) bright++;
+      }
+      colScore[x] = bright / bh;
+    }
+
+    // Find connected runs of columns where score > threshold
+    const THRESH = 0.25; // at least 25% of band height must be card pixels
+    const MIN_CARD_W = Math.round(sw * 0.03); // minimum card width (3% of table width)
+    const MAX_CARD_W = Math.round(sw * 0.20); // maximum card width (20% of table width)
+
+    const runs: { x0: number; x1: number }[] = [];
+    let inRun = false, runStart = 0;
+    for (let x = 0; x < sw; x++) {
+      if (!inRun && colScore[x] >= THRESH) { inRun = true; runStart = x; }
+      else if (inRun && (colScore[x] < THRESH || x === sw - 1)) {
+        const runW = x - runStart;
+        if (runW >= MIN_CARD_W && runW <= MAX_CARD_W) {
+          runs.push({ x0: runStart, x1: x });
+        }
+        inRun = false;
+      }
+    }
+
+    if (runs.length === 0) return [];
+
+    // Sort by score sum (brightest first) and take top maxCards
+    const scored = runs.map(r => {
+      let sum = 0;
+      for (let x = r.x0; x < r.x1; x++) sum += colScore[x];
+      return { ...r, sum };
+    }).sort((a, b) => b.sum - a.sum).slice(0, maxCards);
+
+    // Re-sort left-to-right
+    scored.sort((a, b) => a.x0 - b.x0);
+
+    return scored.map(r => {
+      const cx_s = (r.x0 + r.x1) / 2;
+      const cw_s = r.x1 - r.x0;
+
+      // Find the vertical centroid of bright pixels in this column run
+      let ySum = 0, yCount = 0;
+      let yMin = y1, yMax = y0;
+      for (let x = r.x0; x < r.x1; x++) {
+        for (let y = y0; y < y1; y++) {
+          const i = (y * sw + x) * 4;
+          const r2 = data[i], g = data[i + 1], b = data[i + 2];
+          const lum = r2 * 0.299 + g * 0.587 + b * 0.114;
+          const isCardPixel = lum > 175 && !(g > r2 * 1.15 && g > b * 1.10);
+          if (isCardPixel) {
+            ySum += y; yCount++;
+            if (y < yMin) yMin = y;
+            if (y > yMax) yMax = y;
+          }
+        }
+      }
+      const cy_s  = yCount > 0 ? ySum / yCount : (y0 + y1) / 2;
+      const ch_s  = yCount > 0 ? Math.max(yMax - yMin + 2, cw_s * 1.3) : cw_s * 1.4;
+
+      // Scale back to original video coords
+      return {
+        cx: tx + cx_s / scale,
+        cy: ty + cy_s / scale,
+        w:  cw_s / scale,
+        h:  ch_s / scale,
+      } as CardZone;
+    });
+  }
+
+  // Scan bottom third for hole cards (player's 2 cards)
+  const holeRaw  = findCardsInBand(0.62, 0.97, 2);
+  // Scan middle section for board cards (0–5)
+  const boardRaw = findCardsInBand(0.30, 0.62, 5);
+
+  const holeZones: [CardZone, CardZone] | null =
+    holeRaw.length === 2
+      ? [holeRaw[0], holeRaw[1]]
+      : null;
+
+  return { holeZones, boardZones: boardRaw };
+}
+
+// ── Calibration helpers (kept for manual override if needed) ──────────────────
 
 /**
  * Estimate card size from two hole card click positions.

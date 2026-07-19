@@ -1,11 +1,12 @@
 /**
- * ScreenScanLocal — pixel-based card detection, zero AI API calls.
+ * ScreenScanLocal — pixel-based card detection, zero AI, zero calibration.
  *
  * Flow:
- *  1. Start screen share → calibrate hole card positions (2 clicks)
- *  2. Optional: calibrate first board card position (1 click → 5 zones auto-estimated)
- *  3. Every 200 ms: frame-diff check → if changed, run detectCard() locally
- *  4. POST /api/vision/scan-cards with detected card strings → GTO analysis + Telegram
+ *  1. Start screen share (same picker as AI mode)
+ *  2. Every 200 ms: frame-diff check → if changed, run autoDetectCards() to find
+ *     white rectangles on the green table, then detectCard() on each found zone
+ *  3. POST /api/vision/scan-cards with detected strings → GTO analysis + Telegram
+ *  4. No calibration step, no API key needed
  */
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { cn } from '@/lib/utils';
@@ -16,24 +17,43 @@ import { CardPicker } from '@/components/CardPicker';
 import {
   buildRankTemplates,
   detectCard,
-  buildCalibration,
-  saveCalibration,
-  loadCalibration,
-  clearCalibration,
-  type Calibration,
+  autoDetectCards,
   type CardZone,
   type RankTemplates,
 } from '@/lib/card-detector';
 
-// ── Display helpers ──────────────────────────────────────────────────────────
-const suitSym   = (s: string) => ({ h: '♥', d: '♦', c: '♣', s: '♠' }[s] ?? s);
-const suitCls   = (s: string) => s === 'h' || s === 'd' ? 'text-red-400' : 'text-zinc-200';
-const rankLabel = (r: number) => ({ 14: 'A', 13: 'K', 12: 'Q', 11: 'J', 10: 'T' }[r] ?? String(r));
+// ── Re-use the same green-table finder from ScreenScan ────────────────────────
+function findTableBounds(canvas: HTMLCanvasElement): { x: number; y: number; w: number; h: number } | null {
+  const W = canvas.width, H = canvas.height;
+  const scale = Math.min(1, 320 / W);
+  const sw = Math.round(W * scale), sh = Math.round(H * scale);
+  const tmp = document.createElement('canvas');
+  tmp.width = sw; tmp.height = sh;
+  tmp.getContext('2d')!.drawImage(canvas, 0, 0, sw, sh);
+  const { data } = tmp.getContext('2d')!.getImageData(0, 0, sw, sh);
+  let minX = sw, maxX = 0, minY = sh, maxY = 0, count = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    if (g > 55 && g > r * 1.2 && g > b * 1.05 && r < 200 && b < 200 && g < 240) {
+      const px = (i >> 2) % sw, py = (i >> 2) / sw | 0;
+      if (px < minX) minX = px; if (px > maxX) maxX = px;
+      if (py < minY) minY = py; if (py > maxY) maxY = py;
+      count++;
+    }
+  }
+  if (count < sw * sh * 0.05) return null;
+  const pad = Math.round(30 / scale);
+  return {
+    x: Math.max(0, Math.round(minX / scale) - pad),
+    y: Math.max(0, Math.round(minY / scale) - pad),
+    w: Math.min(W, Math.round((maxX - minX) / scale) + pad * 2),
+    h: Math.min(H, Math.round((maxY - minY) / scale) + pad * 2),
+  };
+}
 
 // ── Frame diff ────────────────────────────────────────────────────────────────
 function frameDiff(prev: Uint8ClampedArray, curr: Uint8ClampedArray): number {
-  const step = 16 * 4;
-  const len  = Math.min(prev.length, curr.length);
+  const step = 16 * 4, len = Math.min(prev.length, curr.length);
   let diff = 0, total = 0;
   for (let i = 0; i < len; i += step) {
     if (Math.abs(prev[i] - curr[i]) + Math.abs(prev[i+1] - curr[i+1]) + Math.abs(prev[i+2] - curr[i+2]) > 30) diff++;
@@ -42,9 +62,13 @@ function frameDiff(prev: Uint8ClampedArray, curr: Uint8ClampedArray): number {
   return total > 0 ? diff / total : 0;
 }
 
+// ── Display helpers ───────────────────────────────────────────────────────────
+const suitSym   = (s: string) => ({ h: '♥', d: '♦', c: '♣', s: '♠' }[s] ?? s);
+const suitCls   = (s: string) => s === 'h' || s === 'd' ? 'text-red-400' : 'text-zinc-200';
+const rankLabel = (r: number) => ({ 14: 'A', 13: 'K', 12: 'Q', 11: 'J', 10: 'T' }[r] ?? String(r));
+
 // ── Types ─────────────────────────────────────────────────────────────────────
-type Phase = 'idle' | 'requesting' | 'calibrating' | 'scanning';
-type CalibStep = 'hole1' | 'hole2' | 'board1' | 'done';
+type Phase = 'idle' | 'requesting' | 'scanning';
 
 interface ScanResult {
   holeCards: string[];
@@ -71,39 +95,33 @@ interface ScanResult {
 // ── Component ─────────────────────────────────────────────────────────────────
 export function ScreenScanLocal() {
   const [phase, setPhase]           = useState<Phase>('idle');
-  const [calibStep, setCalibStep]   = useState<CalibStep>('hole1');
   const [result, setResult]         = useState<ScanResult | null>(null);
   const [holeCards, setHoleCards]   = useState<Card[]>([]);
   const [boardCards, setBoardCards] = useState<Card[]>([]);
   const [error, setError]           = useState<string | null>(null);
   const [analyzing, setAnalyzing]   = useState(false);
   const [scanCount, setScanCount]   = useState(0);
-  const [lastScan, setLastScan]     = useState<string | null>(null);
+  const [tableFound, setTableFound] = useState<boolean | null>(null);
   const [debugCards, setDebugCards] = useState<string[]>([]);
 
-  // Game params
-  const [position, setPosition]     = useState<Position>('BTN');
-  const [players, setPlayers]       = useState(4);
-  const [potSize, setPotSize]       = useState<number | null>(null);
-  const [betToCall, setBetToCall]   = useState<number | null>(null);
+  const [position, setPosition]   = useState<Position>('BTN');
+  const [players, setPlayers]     = useState(4);
+  const [potSize, setPotSize]     = useState<number | null>(null);
+  const [betToCall, setBetToCall] = useState<number | null>(null);
+  const [autoPot, setAutoPot]     = useState(false);
+  const [autoBet, setAutoBet]     = useState(false);
 
-  // Calibration clicks (in VIDEO pixel space, not DOM space)
-  const calibClicks = useRef<{ x: number; y: number }[]>([]);
-  const calibRef    = useRef<Calibration | null>(null);
-  const templatesRef = useRef<RankTemplates | null>(null);
-
-  const videoRef       = useRef<HTMLVideoElement>(null);
-  const canvasRef      = useRef<HTMLCanvasElement>(document.createElement('canvas'));
-  const overlayRef     = useRef<HTMLCanvasElement>(null);
-  const streamRef      = useRef<MediaStream | null>(null);
-  const loopRef        = useRef<ReturnType<typeof setInterval> | null>(null);
-  const watchCanvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
-  const watchPxRef     = useRef<Uint8ClampedArray | null>(null);
+  const videoRef        = useRef<HTMLVideoElement>(null);
+  const canvasRef       = useRef<HTMLCanvasElement>(document.createElement('canvas'));
+  const streamRef       = useRef<MediaStream | null>(null);
+  const loopRef         = useRef<ReturnType<typeof setInterval> | null>(null);
+  const watchCanvasRef  = useRef<HTMLCanvasElement>(document.createElement('canvas'));
+  const watchPxRef      = useRef<Uint8ClampedArray | null>(null);
   const lastScanTimeRef = useRef<number>(0);
-  const busyRef        = useRef(false);
-  const hasCardsRef    = useRef(false);
-
-  const overrides = useRef<Map<string, string>>(new Map());
+  const busyRef         = useRef(false);
+  const hasCardsRef     = useRef(false);
+  const templatesRef    = useRef<RankTemplates | null>(null);
+  const overrides       = useRef<Map<string, string>>(new Map());
 
   // ── Stop ───────────────────────────────────────────────────────────────────
   const stopAll = useCallback(() => {
@@ -117,54 +135,45 @@ export function ScreenScanLocal() {
     overrides.current.clear();
     setPhase('idle');
     setAnalyzing(false);
-    setCalibStep('hole1');
-    calibClicks.current = [];
+    setTableFound(null);
     fetch('/api/vision/reset', { method: 'POST' }).catch(() => {});
   }, []);
 
-  // ── Scan tick: detect cards locally → send to server for GTO ───────────────
+  // ── Scan tick ──────────────────────────────────────────────────────────────
   const scanTick = useCallback(async () => {
     if (busyRef.current) return;
     const video  = videoRef.current;
     const canvas = canvasRef.current;
-    const calib  = calibRef.current;
-    const templates = templatesRef.current;
-    if (!video || video.readyState < 2 || !calib || !templates) return;
-
+    if (!video || video.readyState < 2) return;
     const vw = video.videoWidth, vh = video.videoHeight;
     if (!vw || !vh) return;
 
     canvas.width = vw; canvas.height = vh;
     canvas.getContext('2d')!.drawImage(video, 0, 0);
 
-    // Detect hole cards
-    const detectedHole: string[] = [];
-    for (const zone of calib.holeZones) {
-      const card = detectCard(canvas, zone, templates);
-      if (card) detectedHole.push(card);
-    }
+    // Find green table
+    const bounds = findTableBounds(canvas);
+    setTableFound(bounds !== null);
 
-    if (detectedHole.length !== 2) {
-      // No hole cards visible — might be between hands
-      return;
-    }
+    // Auto-detect card positions (no calibration)
+    const templates = templatesRef.current!;
+    const { holeZones, boardZones } = autoDetectCards(canvas, bounds);
 
-    // Apply manual overrides
-    const finalHole = detectedHole.map((c, i) => {
-      const ov = overrides.current.get(`hole_${i}`);
-      return ov ?? c;
-    });
+    if (!holeZones) return; // cards not dealt yet
 
-    // Detect board cards if calibrated
-    const detectedBoard: string[] = [];
-    if (calib.boardZones) {
-      for (const zone of calib.boardZones) {
-        const card = detectCard(canvas, zone, templates);
-        if (card) detectedBoard.push(card);
-      }
-    }
+    // Detect rank+suit for each found zone
+    const rawHole: (string | null)[] = holeZones.map(z => detectCard(canvas, z, templates));
+    if (rawHole.some(c => c === null)) return; // can't read one of the cards clearly
 
-    setDebugCards([...finalHole, ...detectedBoard]);
+    const finalHole = rawHole as string[];
+    // Apply manual overrides (tap-to-correct)
+    const holeWithOverrides = finalHole.map((c, i) => overrides.current.get(`hole_${i}`) ?? c);
+
+    const detectedBoard: string[] = boardZones
+      .map(z => detectCard(canvas, z, templates))
+      .filter((c): c is string => c !== null);
+
+    setDebugCards([...holeWithOverrides, ...detectedBoard]);
     lastScanTimeRef.current = Date.now();
     busyRef.current = true;
     setAnalyzing(true);
@@ -174,10 +183,10 @@ export function ScreenScanLocal() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          holeCards: finalHole,
+          holeCards:  holeWithOverrides,
           boardCards: detectedBoard,
-          potSize:   potSize   ?? undefined,
-          betToCall: betToCall ?? undefined,
+          potSize:    potSize   ?? undefined,
+          betToCall:  betToCall ?? undefined,
           players,
           position,
         }),
@@ -191,17 +200,19 @@ export function ScreenScanLocal() {
       const newResult = data as ScanResult;
       setResult(newResult);
       setScanCount(c => c + 1);
-      setLastScan(new Date().toLocaleTimeString());
       hasCardsRef.current = true;
 
-      const hParsed = (newResult.holeCards as string[])
+      const hParsed = newResult.holeCards
         .map(s => { try { return parseCard(s); } catch { return null; } })
         .filter(Boolean) as Card[];
-      const bParsed = (newResult.boardCards as string[])
+      const bParsed = newResult.boardCards
         .map(s => { try { return parseCard(s); } catch { return null; } })
         .filter(Boolean) as Card[];
       setHoleCards(hParsed);
       setBoardCards(bParsed);
+
+      if (newResult.potSize > 0 && potSize === null)    { setPotSize(newResult.potSize);     setAutoPot(true); }
+      if (newResult.betToCall > 0 && betToCall === null) { setBetToCall(newResult.betToCall); setAutoBet(true); }
     } catch (err: any) {
       console.warn('scan-cards error:', err?.message);
     } finally {
@@ -231,24 +242,28 @@ export function ScreenScanLocal() {
       stream.getVideoTracks()[0].addEventListener('ended', stopAll);
       await video.play().catch(() => {});
 
-      // Lazy build templates
-      if (!templatesRef.current) {
-        templatesRef.current = buildRankTemplates();
-      }
+      if (!templatesRef.current) templatesRef.current = buildRankTemplates();
 
-      // Check if we have saved calibration for this resolution
-      await new Promise(r => setTimeout(r, 400)); // wait for video to stabilize
-      const vw = video.videoWidth, vh = video.videoHeight;
-      const saved = loadCalibration(vw, vh);
-      if (saved) {
-        calibRef.current = saved;
-        setPhase('scanning');
-        startScanLoop();
-      } else {
-        setPhase('calibrating');
-        setCalibStep('hole1');
-        calibClicks.current = [];
-      }
+      setPhase('scanning');
+
+      // Fast watcher: 200 ms diff check
+      const wc = watchCanvasRef.current;
+      wc.width = 64; wc.height = 36;
+
+      loopRef.current = setInterval(() => {
+        if (!video || video.readyState < 2) return;
+        wc.getContext('2d')!.drawImage(video, 0, 0, 64, 36);
+        const px = wc.getContext('2d')!.getImageData(0, 0, 64, 36).data as Uint8ClampedArray;
+        const diff = watchPxRef.current ? frameDiff(watchPxRef.current, px) : 1;
+        watchPxRef.current = px.slice();
+        const threshold = hasCardsRef.current ? 0.04 : 0.015;
+        if (diff < threshold) return;
+        const now = Date.now();
+        if (busyRef.current || now - lastScanTimeRef.current < 700) return;
+        scanTickRef.current();
+      }, 200);
+
+      setTimeout(() => scanTickRef.current(), 600);
     } catch (err: any) {
       setError(
         err?.name === 'NotAllowedError'
@@ -259,121 +274,7 @@ export function ScreenScanLocal() {
     }
   }, [stopAll]);
 
-  // ── Start scan loop ────────────────────────────────────────────────────────
-  const startScanLoop = useCallback(() => {
-    const wc = watchCanvasRef.current;
-    wc.width = 64; wc.height = 36;
-    const video = videoRef.current!;
-
-    loopRef.current = setInterval(() => {
-      if (!video || video.readyState < 2) return;
-      wc.getContext('2d')!.drawImage(video, 0, 0, 64, 36);
-      const px = wc.getContext('2d')!.getImageData(0, 0, 64, 36).data as Uint8ClampedArray;
-      const diff = watchPxRef.current ? frameDiff(watchPxRef.current, px) : 1;
-      watchPxRef.current = px.slice();
-
-      const threshold = hasCardsRef.current ? 0.04 : 0.015;
-      if (diff < threshold) return;
-      const now = Date.now();
-      if (busyRef.current) return;
-      if (now - lastScanTimeRef.current < 600) return;
-      scanTickRef.current();
-    }, 200);
-
-    setTimeout(() => scanTickRef.current(), 600);
-  }, []);
-
-  // ── Draw calibration overlay ────────────────────────────────────────────────
-  useEffect(() => {
-    if (phase !== 'calibrating') return;
-    const overlay = overlayRef.current;
-    const video   = videoRef.current;
-    if (!overlay || !video) return;
-
-    const draw = () => {
-      const ow = overlay.width, oh = overlay.height;
-      const ctx = overlay.getContext('2d')!;
-      ctx.clearRect(0, 0, ow, oh);
-      // Draw video frame as background
-      if (video.readyState >= 2) {
-        ctx.globalAlpha = 1;
-        ctx.drawImage(video, 0, 0, ow, oh);
-        ctx.globalAlpha = 0.45;
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, ow, oh);
-        ctx.globalAlpha = 1;
-      }
-
-      // Draw confirmed clicks
-      const clicks = calibClicks.current;
-      clicks.forEach((pt, i) => {
-        // Map from video space to overlay space
-        const scaleX = ow / (video.videoWidth || ow);
-        const scaleY = oh / (video.videoHeight || oh);
-        const dx = pt.x * scaleX, dy = pt.y * scaleY;
-        ctx.beginPath();
-        ctx.arc(dx, dy, 14, 0, Math.PI * 2);
-        ctx.strokeStyle = i < 2 ? '#10b981' : '#f59e0b';
-        ctx.lineWidth = 3;
-        ctx.stroke();
-        ctx.fillStyle = i < 2 ? '#10b981' : '#f59e0b';
-        ctx.font = 'bold 13px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(i < 2 ? `К${i + 1}` : 'B1', dx, dy);
-      });
-    };
-    const id = setInterval(draw, 80);
-    return () => clearInterval(id);
-  }, [phase]);
-
-  // ── Handle calibration click on overlay ───────────────────────────────────
-  const handleCalibClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const overlay = overlayRef.current;
-    const video   = videoRef.current;
-    if (!overlay || !video) return;
-
-    const rect = overlay.getBoundingClientRect();
-    const domX = e.clientX - rect.left;
-    const domY = e.clientY - rect.top;
-    // Convert to video pixel space
-    const scaleX = (video.videoWidth  || overlay.width)  / overlay.width;
-    const scaleY = (video.videoHeight || overlay.height) / overlay.height;
-    const vidX = domX * scaleX;
-    const vidY = domY * scaleY;
-
-    calibClicks.current = [...calibClicks.current, { x: vidX, y: vidY }];
-    const clicks = calibClicks.current;
-
-    if (calibStep === 'hole1') {
-      setCalibStep('hole2');
-    } else if (calibStep === 'hole2') {
-      setCalibStep('board1');
-    } else if (calibStep === 'board1') {
-      // Build calibration with board
-      const calib = buildCalibration(clicks[0], clicks[1], clicks[2], video.videoWidth, video.videoHeight);
-      calibRef.current = calib;
-      saveCalibration(calib);
-      setCalibStep('done');
-      setPhase('scanning');
-      startScanLoop();
-    }
-  }, [calibStep, startScanLoop]);
-
-  // ── Skip board calibration ────────────────────────────────────────────────
-  const skipBoardCalib = useCallback(() => {
-    const clicks = calibClicks.current;
-    const video  = videoRef.current;
-    if (clicks.length < 2 || !video) return;
-    const calib = buildCalibration(clicks[0], clicks[1], null, video.videoWidth, video.videoHeight);
-    calibRef.current = calib;
-    saveCalibration(calib);
-    setCalibStep('done');
-    setPhase('scanning');
-    startScanLoop();
-  }, [startScanLoop]);
-
-  // ── Manual hole card override ─────────────────────────────────────────────
+  // ── Manual card override ───────────────────────────────────────────────────
   const handleHoleOverride = useCallback((idx: number, card: Card) => {
     const str = `${'23456789TJQKA'[card.rank - 2]}${'hdcs'[['h','d','c','s'].indexOf(card.suit)]}`;
     overrides.current.set(`hole_${idx}`, str);
@@ -396,16 +297,16 @@ export function ScreenScanLocal() {
           <div>
             <h2 className="text-zinc-100 text-lg font-bold mb-2">Локальный детектор</h2>
             <p className="text-zinc-500 text-sm leading-relaxed max-w-xs">
-              Карты читаются по пикселям — без AI, без API.
-              Быстро, бесплатно, работает оффлайн.
-              Нужна одноразовая калибровка позиций карт.
+              Карты читаются по пикселям прямо в браузере —
+              без AI, без API, без калибровки.
+              Нажми старт и выбери окно с покером.
             </p>
           </div>
           <button
             onClick={startCapture}
             className="w-full max-w-xs py-3 bg-blue-600 hover:bg-blue-500 rounded-xl text-white font-bold text-base transition-colors"
           >
-            ▶ Начать
+            ▶ Начать сканирование
           </button>
           {error && <p className="text-red-400 text-sm px-4">{error}</p>}
           <TelegramSetup />
@@ -416,62 +317,7 @@ export function ScreenScanLocal() {
       {phase === 'requesting' && (
         <div className="flex flex-col items-center justify-center flex-1 gap-4 p-6 text-center">
           <div className="w-10 h-10 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-          <p className="text-zinc-400 text-sm">Выбери окно с покером…</p>
-        </div>
-      )}
-
-      {/* CALIBRATING */}
-      {phase === 'calibrating' && (
-        <div className="flex flex-col h-full">
-          {/* Instruction bar */}
-          <div className="px-3 py-2 border-b border-zinc-800 bg-zinc-900">
-            <p className="text-zinc-300 text-sm font-medium">
-              {calibStep === 'hole1' && '👆 Кликни на центр ЛЕВОЙ карты в руке'}
-              {calibStep === 'hole2' && '👆 Кликни на центр ПРАВОЙ карты в руке'}
-              {calibStep === 'board1' && '👆 Кликни на ПЕРВУЮ карту флопа — или пропусти'}
-            </p>
-            {calibStep === 'board1' && (
-              <div className="flex gap-2 mt-1.5">
-                <p className="text-zinc-600 text-xs flex-1">
-                  Без борда карты флопа нужно вводить вручную
-                </p>
-                <button
-                  onClick={skipBoardCalib}
-                  className="text-xs text-zinc-500 hover:text-zinc-300 underline shrink-0"
-                >
-                  Пропустить →
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Canvas overlay */}
-          <div className="flex-1 relative overflow-hidden bg-black">
-            <canvas
-              ref={(el) => {
-                (overlayRef as any).current = el;
-                if (el) {
-                  el.width  = el.offsetWidth  || 640;
-                  el.height = el.offsetHeight || 360;
-                }
-              }}
-              onClick={handleCalibClick}
-              className="w-full h-full cursor-crosshair"
-              style={{ touchAction: 'none' }}
-            />
-          </div>
-
-          <div className="px-3 py-2 border-t border-zinc-800 flex justify-between items-center">
-            <span className="text-zinc-600 text-xs">
-              {calibClicks.current.length}/{ calibStep === 'board1' ? 2 : calibStep === 'hole2' ? 1 : 0} кликов
-            </span>
-            <button
-              onClick={stopAll}
-              className="text-zinc-600 hover:text-zinc-400 text-xs"
-            >
-              Отмена
-            </button>
-          </div>
+          <p className="text-zinc-400 text-sm">Выбери окно с покером в диалоге браузера…</p>
         </div>
       )}
 
@@ -486,28 +332,32 @@ export function ScreenScanLocal() {
                 analyzing ? 'bg-amber-400 animate-pulse' : 'bg-blue-400 animate-pulse'
               )} />
               <span className="text-zinc-400 text-xs">
-                {analyzing ? 'Анализирую…' : `Локальный детектор • ${scanCount} раздач`}
+                {analyzing
+                  ? 'Анализирую…'
+                  : tableFound === false
+                    ? '⚠ Стол не найден'
+                    : `Пиксели • ${scanCount} раздач`}
               </span>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => { clearCalibration(); stopAll(); }}
-                className="text-zinc-700 hover:text-zinc-500 text-[10px] border border-zinc-800 rounded px-1.5 py-0.5"
-              >
-                Перекалибровать
-              </button>
-              <button onClick={stopAll} className="text-zinc-600 hover:text-zinc-400 text-xs">
-                ✕
-              </button>
-            </div>
+            <button onClick={stopAll} className="text-zinc-600 hover:text-zinc-400 text-xs">
+              ✕ Стоп
+            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
 
-            {/* Debug: what was detected */}
+            {/* No table warning */}
+            {tableFound === false && (
+              <div className="bg-amber-950/40 border border-amber-800/50 rounded-lg p-3 text-sm text-amber-400">
+                <p className="font-bold mb-1">⚠ Зелёный стол не найден</p>
+                <p className="text-amber-600 text-xs">Убедись что окно с покером видно на экране.</p>
+              </div>
+            )}
+
+            {/* Debug bar */}
             {debugCards.length > 0 && (
-              <div className="bg-zinc-900 border border-zinc-800 rounded px-3 py-1.5 flex gap-1 items-center flex-wrap">
-                <span className="text-zinc-600 text-[10px] uppercase tracking-widest mr-1">Пиксели:</span>
+              <div className="bg-zinc-900 border border-zinc-800 rounded px-3 py-1.5 flex gap-2 items-center flex-wrap">
+                <span className="text-zinc-600 text-[10px] uppercase tracking-widest">Пиксели:</span>
                 {debugCards.map((c, i) => (
                   <span key={i} className="text-zinc-400 text-xs font-mono">{c}</span>
                 ))}
@@ -559,6 +409,11 @@ export function ScreenScanLocal() {
                     style={{ width: `${advice.equity * 100}%` }}
                   />
                 </div>
+                {advice.usedRangeVsRange && (
+                  <div className="text-[10px] text-zinc-600 italic mt-1.5">
+                    Против диапазона виллана (~{advice.villainRangePct}% рук)
+                  </div>
+                )}
               </div>
             )}
 
@@ -600,6 +455,9 @@ export function ScreenScanLocal() {
                 <p className="text-teal-600 text-xs mt-1">
                   {advice.draws.discountedOuts} outs → ~{advice.draws.equityRiverClean}%
                 </p>
+                {advice.draws.antiOutsNote && (
+                  <p className="text-teal-800 text-xs mt-1 italic">{advice.draws.antiOutsNote}</p>
+                )}
               </div>
             )}
 
@@ -607,6 +465,7 @@ export function ScreenScanLocal() {
             {advice?.bluffRead && (
               <div className={cn('rounded-lg p-3 border',
                 advice.bluffRead.label === 'Вероятно блеф' ? 'bg-orange-950/50 border-orange-800/50' :
+                advice.bluffRead.label === 'Похоже на вэлью' ? 'bg-blue-950/50 border-blue-800/50' :
                 'bg-zinc-900 border-zinc-800'
               )}>
                 <p className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1">Read виллана</p>
@@ -617,7 +476,7 @@ export function ScreenScanLocal() {
               </div>
             )}
 
-            {/* Detected cards */}
+            {/* Detected cards (tap to correct) */}
             {(holeCards.length > 0 || boardCards.length > 0) && (
               <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 space-y-2">
                 {holeCards.length > 0 && (
@@ -659,14 +518,11 @@ export function ScreenScanLocal() {
               </div>
             )}
 
+            {/* Waiting state */}
             {!advice && !analyzing && (
-              <div className="text-center py-8">
+              <div className="text-center py-8 space-y-1">
                 <p className="text-zinc-600 text-sm">Жду карты на экране…</p>
-                <p className="text-zinc-700 text-xs mt-1">
-                  {calibRef.current?.boardZones
-                    ? 'Наблюдаю за рукой и бордом'
-                    : 'Борд не откалиброван — введи вручную ниже'}
-                </p>
+                <p className="text-zinc-700 text-xs">Открой покерный стол и начни раздачу</p>
               </div>
             )}
 
@@ -675,20 +531,24 @@ export function ScreenScanLocal() {
               <p className="text-zinc-500 text-xs uppercase tracking-widest">Параметры игры</p>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-zinc-600 text-xs block mb-1">Пот</label>
+                  <label className="text-zinc-600 text-xs flex items-center gap-1 mb-1">
+                    Пот {autoPot && <span className="text-amber-400" title="Авто">📷</span>}
+                  </label>
                   <input
                     type="number" min={0} placeholder="—"
                     value={potSize ?? ''}
-                    onChange={e => setPotSize(e.target.value ? Number(e.target.value) : null)}
+                    onChange={e => { setAutoPot(false); setPotSize(e.target.value ? Number(e.target.value) : null); }}
                     className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-blue-600"
                   />
                 </div>
                 <div>
-                  <label className="text-zinc-600 text-xs block mb-1">Колл</label>
+                  <label className="text-zinc-600 text-xs flex items-center gap-1 mb-1">
+                    Колл {autoBet && <span className="text-amber-400" title="Авто">📷</span>}
+                  </label>
                   <input
                     type="number" min={0} placeholder="—"
                     value={betToCall ?? ''}
-                    onChange={e => setBetToCall(e.target.value ? Number(e.target.value) : null)}
+                    onChange={e => { setAutoBet(false); setBetToCall(e.target.value ? Number(e.target.value) : null); }}
                     className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-blue-600"
                   />
                 </div>
