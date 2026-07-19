@@ -102,10 +102,10 @@ function findTableBounds(
 }
 
 // Crop a region from canvas and return a base64 JPEG string (no data: prefix).
-function cropToJpeg(src: HTMLCanvasElement, x: number, y: number, w: number, h: number, quality = 0.88): string {
+function cropToJpeg(src: HTMLCanvasElement, x: number, y: number, w: number, h: number, quality = 0.75): string {
   const dst = document.createElement('canvas');
-  // Cap at 960px wide to keep payload small (Gemini doesn't need more)
-  const scale = Math.min(1, 960 / w);
+  // 480px wide — Gemini reads card ranks fine at this resolution, 4× smaller than 960px
+  const scale = Math.min(1, 480 / w);
   dst.width  = Math.round(w * scale);
   dst.height = Math.round(h * scale);
   const ctx = dst.getContext('2d')!;
@@ -145,7 +145,7 @@ export function ScreenScan() {
   const streamRef   = useRef<MediaStream | null>(null);
   const loopRef     = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevPx      = useRef<Uint8ClampedArray | null>(null);
-  const busyRef     = useRef(false);
+  const busyRef     = useRef(0); // concurrent Gemini call counter
 
   // Manual card overrides (user tap-to-correct)
   const overrides   = useRef<Map<string, string>>(new Map()); // slot → card string
@@ -156,7 +156,7 @@ export function ScreenScan() {
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
     prevPx.current = null;
-    busyRef.current = false;
+    busyRef.current = 0;
     overrides.current.clear();
     setPhase('idle');
     setAnalyzing(false);
@@ -165,7 +165,8 @@ export function ScreenScan() {
 
   // ── Scan tick ─────────────────────────────────────────────────────────────
   const scanTick = useCallback(async () => {
-    if (busyRef.current) return;
+    // Allow up to 2 concurrent Gemini calls — don't block if one is slow
+    if (busyRef.current > 1) return;
     const video  = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || video.readyState < 2) return;
@@ -194,7 +195,7 @@ export function ScreenScan() {
       jpeg = cropToJpeg(canvas, 0, 0, vw, vh, 0.80);
     }
 
-    busyRef.current = true;
+    busyRef.current++;
     setAnalyzing(true);
 
     try {
@@ -209,7 +210,11 @@ export function ScreenScan() {
           betToCallOverride:  betToCall ?? undefined,
         }),
       });
-      const data = await res.json();
+
+      if (!res.ok) return; // server error — skip frame
+
+      let data: any;
+      try { data = await res.json(); } catch { return; } // truncated response
 
       if (!data.ok) {
         // Gemini couldn't see cards this frame — keep last result
@@ -250,8 +255,8 @@ export function ScreenScan() {
       // Network or server error — ignore this tick
       console.warn('vision/scan error:', err?.message);
     } finally {
-      busyRef.current = false;
-      setAnalyzing(false);
+      busyRef.current = Math.max(0, busyRef.current - 1);
+      setAnalyzing(busyRef.current > 0);
     }
   }, [position, players, potSize, betToCall]);
 
@@ -278,9 +283,9 @@ export function ScreenScan() {
       setPhase('scanning');
 
       // Start scan loop — 2.5 s interval
-      loopRef.current = setInterval(() => { scanTickRef.current(); }, 2500);
+      loopRef.current = setInterval(() => { scanTickRef.current(); }, 1500);
       // First tick immediately after a short wait for video to populate
-      setTimeout(() => { scanTickRef.current(); }, 800);
+      setTimeout(() => { scanTickRef.current(); }, 600);
     } catch (err: any) {
       setError(
         err?.name === 'NotAllowedError'

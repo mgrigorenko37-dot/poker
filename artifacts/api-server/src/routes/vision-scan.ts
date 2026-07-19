@@ -39,31 +39,13 @@ function getGenAI(): GoogleGenerativeAI {
   return genAI;
 }
 
-const VISION_PROMPT = `You are a poker card recognition system. Analyze this poker game screenshot.
-
-HOLE CARDS: the 2 face-up cards belonging to the player — usually at the bottom center or bottom-right of the screen.
-BOARD CARDS: community cards in the center of the table (flop/turn/river), 0 to 5 cards total.
-
-Return ONLY valid JSON (no markdown, no explanation, no code fences):
-{
-  "holeCards": ["Xr","Yr"],
-  "boardCards": [],
-  "potSize": null,
-  "betToCall": null,
-  "activePlayers": null
-}
-
-Card format: rank letter + suit letter.
-  Ranks: A K Q J T 9 8 7 6 5 4 3 2
-  Suits: h (hearts ♥)  d (diamonds ♦)  c (clubs ♣)  s (spades ♠)
-Examples: "Ah"=Ace♥  "Ks"=King♠  "Td"=Ten♦  "2c"=Two♣
-
-Rules:
-- holeCards must be exactly 2 cards, or null if face-down/not visible
-- boardCards: list 3, 4, or 5 visible board cards (empty array [] if none)
-- potSize: total chips/money shown in the pot area (number), null if not visible
-- betToCall: the call/check amount shown near action buttons (number), null if not visible
-- activePlayers: count of players still in the hand (number), null if uncertain`;
+// Short prompt = fewer input tokens = faster response
+const VISION_PROMPT = `Poker screenshot. Return ONLY JSON, no markdown:
+{"holeCards":["Xr","Yr"],"boardCards":[],"potSize":null,"betToCall":null,"activePlayers":null}
+holeCards=player's 2 face-up cards at bottom of screen (null if hidden).
+boardCards=community cards in center (0-5 cards, empty array if none).
+Card format: rank(A K Q J T 9-2)+suit(h d c s). Examples: "Ah","Ks","Td","2c".
+potSize=chips in pot (number or null). betToCall=call amount (number or null).`;
 
 router.post("/vision/scan", async (req, res) => {
   const {
@@ -80,27 +62,53 @@ router.post("/vision/scan", async (req, res) => {
   }
 
   try {
-    const model = getGenAI().getGenerativeModel({ model: "gemini-3-flash-preview" });
+    // Try fast model first, fall back to preview on 503
+    const MODELS = ["gemini-3.1-flash-lite", "gemini-3-flash-preview"];
+    let raw = "";
 
-    const geminiResult = await model.generateContent({
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { inlineData: { mimeType: "image/jpeg", data: image } },
-            { text: VISION_PROMPT },
-          ],
-        },
-      ],
-    });
+    for (let attempt = 0; attempt < MODELS.length; attempt++) {
+      const modelName = MODELS[attempt];
+      const model = getGenAI().getGenerativeModel({ model: modelName });
 
-    // Strip any accidental markdown fences from the response
-    const raw = geminiResult.response
-      .text()
-      .trim()
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/```\s*$/, "")
-      .trim();
+      // Hard 8-second timeout — drop slow responses rather than let them pile up
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+
+      try {
+        const geminiResult = await model.generateContent(
+          {
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  { inlineData: { mimeType: "image/jpeg", data: image } },
+                  { text: VISION_PROMPT },
+                ],
+              },
+            ],
+          },
+          { signal: controller.signal } as any,
+        );
+        clearTimeout(timer);
+        raw = geminiResult.response
+          .text()
+          .trim()
+          .replace(/^```(?:json)?\s*/i, "")
+          .replace(/```\s*$/, "")
+          .trim();
+        break; // success
+      } catch (err: any) {
+        clearTimeout(timer);
+        const status = err?.status ?? 0;
+        const isRetryable = status === 503 || status === 429 || err?.name === "AbortError";
+        if (isRetryable && attempt < MODELS.length - 1) {
+          logger.warn({ model: modelName, status, attempt }, "vision/scan: retrying with fallback model");
+          await new Promise(r => setTimeout(r, 300));
+          continue;
+        }
+        throw err;
+      }
+    }
 
     let parsed: any;
     try {
