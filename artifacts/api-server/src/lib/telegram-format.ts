@@ -75,6 +75,7 @@ export function buildTelegramText(body: {
     confidence: 'high' | 'medium' | 'low';
     tendencyNote: string;
     rangePct: number;
+    profileNote?: string | null;
   } | null;
   opponentProfile?: {
     handsPlayed: number;
@@ -188,13 +189,17 @@ export function buildTelegramText(body: {
     }
   }
 
-  // ── Диапазон оппонента (этап 3) ───────────────────────────────────────────
+  // ── Диапазон оппонента (этап 3 + профиль этап 4) ─────────────────────────
   if (body.villainRange && body.villainRange.rangePct > 0) {
     const vr = body.villainRange;
     const confEmoji = vr.confidence === 'high' ? '🎯' : vr.confidence === 'medium' ? '🔍' : '❓';
     lines.push(`${confEmoji} ${vr.description}`);
     if (vr.tendencyNote) {
       lines.push(`💡 <i>${vr.tendencyNote}</i>`);
+    }
+    // Surface when session profile meaningfully shifted the range vs. action-only
+    if (vr.profileNote) {
+      lines.push(`🧠 <i>${vr.profileNote}</i>`);
     }
   }
 

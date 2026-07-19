@@ -256,13 +256,14 @@ router.post("/vision/scan", async (req, res) => {
     position,
     usedRangeVsRange: sim.usedRangeVsRange,
     villainRangePct: narrowed.rangePct,
-    // Phase 3: narrowed villain range
+    // Phase 3+4: narrowed villain range (session-profile-adjusted)
     villainRange: {
       description: narrowed.description,
       categories: narrowed.categories,
       confidence: narrowed.confidence,
       tendencyNote: narrowed.tendencyNote,
       rangePct: narrowed.rangePct,
+      profileNote: narrowed.profileNote,
     },
     // Phase 5: SPR
     sprAdvice: sprAdvice
