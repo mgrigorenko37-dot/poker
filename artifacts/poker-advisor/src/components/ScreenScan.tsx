@@ -167,6 +167,8 @@ export function ScreenScan() {
     setPhase('idle');
     setAnalyzing(false);
     setTableFound(null);
+    // Reset server-side hand state machine so next session starts clean
+    fetch('/api/vision/reset', { method: 'POST' }).catch(() => {});
   }, []);
 
   // ── Full scan: capture frame → crop → Gemini → update UI ──────────────────
@@ -254,6 +256,8 @@ export function ScreenScan() {
   const startCapture = useCallback(async () => {
     setError(null);
     setPhase('requesting');
+    // Reset server-side hand state machine before new session
+    fetch('/api/vision/reset', { method: 'POST' }).catch(() => {});
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 10, max: 15 }, displaySurface: 'window' } as MediaTrackConstraints,

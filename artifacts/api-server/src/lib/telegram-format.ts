@@ -66,6 +66,16 @@ export function buildTelegramText(body: {
     equityTurn:  number;
   } | null;
   details?: string[];
+  handHistory?: {
+    actions: Array<{ street: string; description: string; potSize: number; betToCall: number }>;
+  } | null;
+  villainRange?: {
+    description: string;
+    categories: string[];
+    confidence: 'high' | 'medium' | 'low';
+    tendencyNote: string;
+    rangePct: number;
+  } | null;
 }): string {
   const action  = body.displayText ?? body.action ?? "?";
   const emoji   = ACTION_EMOJI[action] ?? "❓";
@@ -123,6 +133,36 @@ export function buildTelegramText(body: {
 
   const lines = [line1, line2, line3];
   if (line4) lines.push(line4);
+
+  // ── История руки (этап 2) ─────────────────────────────────────────────────
+  if (body.handHistory?.actions && body.handHistory.actions.length > 0) {
+    const streetOrder = ['preflop', 'flop', 'turn', 'river'];
+    const streetLabel: Record<string, string> = {
+      preflop: 'преф', flop: 'флоп', turn: 'тёрн', river: 'ривер',
+    };
+    const byStreet = new Map<string, string>();
+    for (const a of body.handHistory.actions) {
+      byStreet.set(a.street, a.description);
+    }
+    const historyParts: string[] = [];
+    for (const s of streetOrder) {
+      const desc = byStreet.get(s);
+      if (desc) historyParts.push(`${streetLabel[s] ?? s}: ${desc}`);
+    }
+    if (historyParts.length > 0) {
+      lines.push(`📋 <i>${historyParts.join('  ·  ')}</i>`);
+    }
+  }
+
+  // ── Диапазон оппонента (этап 3) ───────────────────────────────────────────
+  if (body.villainRange && body.villainRange.rangePct > 0) {
+    const vr = body.villainRange;
+    const confEmoji = vr.confidence === 'high' ? '🎯' : vr.confidence === 'medium' ? '🔍' : '❓';
+    lines.push(`${confEmoji} ${vr.description}`);
+    if (vr.tendencyNote) {
+      lines.push(`💡 <i>${vr.tendencyNote}</i>`);
+    }
+  }
 
   return lines.join("\n");
 }

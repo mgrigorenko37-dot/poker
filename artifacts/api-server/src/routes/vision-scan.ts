@@ -1,15 +1,18 @@
 /**
  * POST /api/vision/scan
  *
- * Fast path:
- *   1. Start Gemini stream
- *   2. When hole cards appear in the stream (~300 ms) → run quick Monte Carlo,
- *      fire Telegram immediately (fire-and-forget)
- *   3. Finish streaming, parse full JSON (pot/bet), re-run GTO
- *   4. Send updated Telegram only if action changed
- *   5. Return full analysis to browser
+ * Flow:
+ *   1. Start Gemini stream, accumulate until full JSON ready
+ *   2. Parse hole + board cards, run GTO analysis
+ *   3. Feed result into hand state machine → fires Telegram only on real events:
+ *        • New hand (hole cards appeared / changed)
+ *        • Street change (flop / turn / river)
+ *        • Within-street action stable for N scans
+ *        • Fold (hole cards disappeared)
+ *   4. Broadcast full analysis over WebSocket
+ *   5. Return JSON to browser
  *
- * This gets Telegram ~600 ms earlier than waiting for the full response.
+ * No more early-fire or key-based dedup — the state machine owns all Telegram decisions.
  */
 
 import { Router, type IRouter } from "express";
@@ -20,12 +23,10 @@ import { buildTelegramText } from "../lib/telegram-format";
 import { logger } from "../lib/logger";
 import { parseCard, runMonteCarloSim } from "../lib/poker";
 import { getFullAdvice } from "../lib/poker-gto";
+import { updateHandState, resetHandState, getHandHistory, type TelegramTrigger } from "../lib/hand-state";
+import { narrowVillainRange } from "../lib/range-narrower";
 
 const router: IRouter = Router();
-
-// ── Dedup ─────────────────────────────────────────────────────────────────────
-// Key = hole+board+action  →  prevents duplicate Telegram for same hand state
-let lastSentKey: string | null = null;
 
 // ── Gemini client (lazy-init, reused) ─────────────────────────────────────────
 let genAI: GoogleGenerativeAI | null = null;
@@ -38,36 +39,31 @@ function getGenAI(): GoogleGenerativeAI {
   return genAI;
 }
 
-// Ultra-short prompt — fewer tokens = faster TTFT (time-to-first-token)
+// Short prompt — fewer tokens = faster TTFT.
+// lastAction: most recent visible action text from the HUD/chat (e.g. "raised to 12", "checked", "called 5") — null if not visible.
 const VISION_PROMPT =
   `Poker screenshot. Return ONLY raw JSON (no markdown):
-{"holeCards":["Xr","Yr"],"boardCards":[],"potSize":null,"betToCall":null,"activePlayers":null}
+{"holeCards":["Xr","Yr"],"boardCards":[],"potSize":null,"betToCall":null,"activePlayers":null,"lastAction":null}
 holeCards=player 2 cards at bottom (null if hidden). boardCards=center 0-5.
-Ranks: A K Q J T 9-2. Suits: h d c s. E.g. "Ah","Ks","Td","2c".`;
+Ranks: A K Q J T 9-2. Suits: h d c s. E.g. "Ah","Ks","Td","2c".
+lastAction=last visible action text from HUD/chat log (e.g. "raised to 12", "checked", "called 5"), null if absent.`;
 
 // Models to try in order (fastest first)
 const MODELS = ["gemini-3.1-flash-lite", "gemini-3-flash-preview"];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Extract {"holeCards":["Xr","Yr"]} before stream is complete */
-function extractEarlyHole(text: string): [string, string] | null {
-  const m = text.match(/"holeCards"\s*:\s*\[\s*"([^"]{2})"\s*,\s*"([^"]{2})"\s*\]/);
-  return m ? [m[1], m[2]] : null;
-}
-
-function makeSendKey(hole: string[], board: string[], action: string) {
-  return JSON.stringify({ hole, board, action });
-}
-
-function safeTelegram(payload: any, key: string): boolean {
-  if (!isTelegramConfigured()) return false;
-  if (key === lastSentKey) return false;
-  lastSentKey = key;
-  sendTelegramMessage(buildTelegramText(payload)).catch((err) =>
+/**
+ * Send Telegram if configured, tagged with the trigger reason for logging.
+ * Fire-and-forget — never blocks the HTTP response.
+ */
+function fireTelegram(payload: Parameters<typeof buildTelegramText>[0], trigger: TelegramTrigger): void {
+  if (!isTelegramConfigured()) return;
+  const text = buildTelegramText(payload);
+  sendTelegramMessage(text).catch((err) =>
     logger.error({ err }, "vision/scan: Telegram send failed"),
   );
-  return true;
+  logger.info({ reason: trigger.reason }, "vision/scan: Telegram fired");
 }
 
 // ── Route ─────────────────────────────────────────────────────────────────────
@@ -85,10 +81,6 @@ router.post("/vision/scan", async (req, res) => {
     res.status(400).json({ error: "image (base64 JPEG string) is required" });
     return;
   }
-
-  // Track whether we already fired Telegram early (cards-only)
-  let earlyTelegramFired = false;
-  let earlyHoleStrings: string[] | null = null;
 
   const contents = [
     {
@@ -128,40 +120,6 @@ router.post("/vision/scan", async (req, res) => {
           .replace(/^```(?:json)?\s*/i, "")
           .replace(/```\s*$/, "")
           .trim();
-
-        // ── Early card extraction ──────────────────────────────────────────
-        // Fire Telegram the moment hole cards appear in the stream
-        // (~200-400 ms before full JSON is ready)
-        if (!earlyTelegramFired && !earlyHoleStrings) {
-          const early = extractEarlyHole(clean);
-          if (early) {
-            earlyHoleStrings = early;
-            try {
-              const hole = early.map(parseCard);
-              const quickSim = runMonteCarloSim(hole, [], Math.max(2, Math.min(9, players)), 400);
-              const quickAdvice = getFullAdvice(hole, [], 0, 0, players, position, quickSim, 1.0, "");
-              const earlyKey = makeSendKey(early, [], quickAdvice.displayText);
-
-              if (safeTelegram(
-                {
-                  holeCards: early, boardCards: [], action: quickAdvice.action,
-                  displayText: quickAdvice.displayText, color: quickAdvice.color,
-                  details: quickAdvice.details, equity: quickAdvice.equity,
-                  potOdds: null, mdf: null,
-                  handCategory: quickAdvice.handCategory, handName: quickAdvice.handName,
-                  draws: null, bluffRead: null,
-                  potSize: 0, betToCall: 0, players,
-                  position, usedRangeVsRange: quickSim.usedRangeVsRange,
-                  villainRangePct: quickSim.villainRangePct, ts: Date.now(),
-                },
-                earlyKey,
-              )) {
-                earlyTelegramFired = true;
-                logger.info({ hole: early }, "vision/scan: early Telegram fired");
-              }
-            } catch { /* ignore parse errors in early extraction */ }
-          }
-        }
 
         // ── Try full JSON parse ────────────────────────────────────────────
         try {
@@ -216,8 +174,17 @@ router.post("/vision/scan", async (req, res) => {
     typeof parsed.betToCall === "number" ? parsed.betToCall : null;
   const detectedPlayers: number | null =
     typeof parsed.activePlayers === "number" ? parsed.activePlayers : null;
+  const lastAction: string | null =
+    typeof parsed.lastAction === "string" && parsed.lastAction.length > 0
+      ? parsed.lastAction
+      : null;
 
   if (holeStrings.length !== 2) {
+    // Hole cards not visible → player may have folded; notify state machine
+    const foldTrigger = updateHandState(null, [], "");
+    if (foldTrigger?.reason === "fold" && isTelegramConfigured()) {
+      sendTelegramMessage("🔻 <b>Рука закончена</b>\nКарты скрыты — фолд или шоудаун").catch(() => {});
+    }
     res.json({ ok: false, error: "Hole cards not detected in image", detected: parsed });
     return;
   }
@@ -242,7 +209,11 @@ router.post("/vision/scan", async (req, res) => {
   const finalBet     = betToCallOverride ?? detectedBet ?? 0;
   const finalPlayers = Math.max(2, Math.min(9, detectedPlayers ?? players));
 
-  const sim    = runMonteCarloSim(hole, board, finalPlayers, 1200);
+  // ── Range narrowing (Phase 3) ──────────────────────────────────────────────
+  const currentHistory = getHandHistory();
+  const narrowed = narrowVillainRange(currentHistory.actions, currentHistory.street);
+
+  const sim    = runMonteCarloSim(hole, board, finalPlayers, 1200, narrowed.rangeKeys);
   const advice = getFullAdvice(hole, board, finalPot, finalBet, finalPlayers, position, sim, 1.0, "");
 
   const output = {
@@ -266,23 +237,56 @@ router.post("/vision/scan", async (req, res) => {
     players: finalPlayers,
     position,
     usedRangeVsRange: sim.usedRangeVsRange,
-    villainRangePct: sim.villainRangePct,
+    villainRangePct: narrowed.rangePct,
+    // Phase 3: narrowed villain range
+    villainRange: {
+      description: narrowed.description,
+      categories: narrowed.categories,
+      confidence: narrowed.confidence,
+      tendencyNote: narrowed.tendencyNote,
+      rangePct: narrowed.rangePct,
+    },
     ts: Date.now(),
   };
 
   // ── Broadcast to WebSocket ─────────────────────────────────────────────────
   broadcastAnalysis(output as any);
 
-  // ── Telegram (full analysis — only if action changed since early fire) ─────
-  const finalKey = makeSendKey(holeStrings, validBoardStrings, advice.displayText);
-  safeTelegram(output, finalKey);
+  // ── Hand state machine + Telegram ─────────────────────────────────────────
+  // Only fires on real game events: new hand, street change, stable action shift.
+  // OCR noise / Monte Carlo variance will NOT trigger spurious messages.
+  const trigger = updateHandState(
+    holeStrings,
+    validBoardStrings,
+    advice.displayText,
+    finalPot,
+    finalBet,
+    lastAction,
+  );
+  const handHistory = getHandHistory();
+  if (trigger) {
+    fireTelegram({ ...output, handHistory }, trigger);
+  }
 
   logger.info(
-    { action: advice.displayText, equity: Math.round(advice.equity * 100), hole: holeStrings, board: validBoardStrings, earlyFired: earlyTelegramFired },
+    {
+      action: advice.displayText,
+      equity: Math.round(advice.equity * 100),
+      hole: holeStrings,
+      board: validBoardStrings,
+      telegramTrigger: trigger?.reason ?? null,
+    },
     "vision/scan: analysis complete",
   );
 
   res.json({ ok: true, ...output });
+});
+
+// ── Reset state machine ────────────────────────────────────────────────────────
+// Called by ScreenScan when the session starts/stops so the state is clean.
+router.post("/vision/reset", (_req, res) => {
+  resetHandState();
+  res.json({ ok: true });
 });
 
 export default router;
