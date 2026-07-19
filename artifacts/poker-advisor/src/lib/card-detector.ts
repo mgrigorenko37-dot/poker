@@ -282,8 +282,8 @@ export function detectCard(
     }
   }
 
-  // Confidence threshold
-  if (bestDist > 0.50) return null;
+  // Confidence threshold — raised from 0.50 to 0.58 to accept more font variants
+  if (bestDist > 0.58) return null;
 
   // Normalize 'T' alias
   const finalRank = bestRank === '10' ? 'T' : bestRank;
@@ -352,16 +352,17 @@ export function autoDetectCards(
         const r = data[i], g = data[i + 1], b = data[i + 2];
         const lum = r * 0.299 + g * 0.587 + b * 0.114;
         // Must be bright AND not strongly green (rules out the felt itself)
-        const isCardPixel = lum > 175 && !(g > r * 1.15 && g > b * 1.10);
+        // Lowered from 175→145 to catch off-white/cream card faces common in many clients
+        const isCardPixel = lum > 145 && !(g > r * 1.10 && g > b * 1.05);
         if (isCardPixel) bright++;
       }
       colScore[x] = bright / bh;
     }
 
     // Find connected runs of columns where score > threshold
-    const THRESH = 0.25; // at least 25% of band height must be card pixels
+    const THRESH = 0.18; // lowered from 0.25 — 18% of band height (catches narrower/partially occluded cards)
     const MIN_CARD_W = Math.round(sw * 0.03); // minimum card width (3% of table width)
-    const MAX_CARD_W = Math.round(sw * 0.20); // maximum card width (20% of table width)
+    const MAX_CARD_W = Math.round(sw * 0.26); // maximum card width (26% of table width, raised from 20%)
 
     const runs: { x0: number; x1: number }[] = [];
     let inRun = false, runStart = 0;
@@ -400,7 +401,7 @@ export function autoDetectCards(
           const i = (y * sw + x) * 4;
           const r2 = data[i], g = data[i + 1], b = data[i + 2];
           const lum = r2 * 0.299 + g * 0.587 + b * 0.114;
-          const isCardPixel = lum > 175 && !(g > r2 * 1.15 && g > b * 1.10);
+          const isCardPixel = lum > 145 && !(g > r2 * 1.10 && g > b * 1.05);
           if (isCardPixel) {
             ySum += y; yCount++;
             if (y < yMin) yMin = y;
@@ -421,10 +422,10 @@ export function autoDetectCards(
     });
   }
 
-  // Scan bottom third for hole cards (player's 2 cards)
-  const holeRaw  = findCardsInBand(0.62, 0.97, 2);
-  // Scan middle section for board cards (0–5)
-  const boardRaw = findCardsInBand(0.30, 0.62, 5);
+  // Scan bottom section for hole cards — widened from 0.62–0.97 to catch more client layouts
+  const holeRaw  = findCardsInBand(0.55, 0.99, 2);
+  // Scan middle section for board cards — widened from 0.30–0.62
+  const boardRaw = findCardsInBand(0.22, 0.70, 5);
 
   const holeZones: [CardZone, CardZone] | null =
     holeRaw.length === 2

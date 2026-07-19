@@ -41,7 +41,8 @@ function findTableBounds(canvas: HTMLCanvasElement): { x: number; y: number; w: 
       count++;
     }
   }
-  if (count < sw * sh * 0.05) return null;
+  // Lowered from 5% → 2% — dark/blue tables have less green
+  if (count < sw * sh * 0.02) return null;
   const pad = Math.round(30 / scale);
   return {
     x: Math.max(0, Math.round(minX / scale) - pad),
@@ -103,6 +104,8 @@ export function ScreenScanLocal() {
   const [scanCount, setScanCount]   = useState(0);
   const [tableFound, setTableFound] = useState<boolean | null>(null);
   const [debugCards, setDebugCards] = useState<string[]>([]);
+  // Detailed scan diagnostics shown to user so they can see what's failing
+  const [scanStatus, setScanStatus] = useState<string | null>(null);
 
   const [position, setPosition]   = useState<Position>('BTN');
   const [players, setPlayers]     = useState(4);
@@ -136,6 +139,7 @@ export function ScreenScanLocal() {
     setPhase('idle');
     setAnalyzing(false);
     setTableFound(null);
+    setScanStatus(null);
     fetch('/api/vision/reset', { method: 'POST' }).catch(() => {});
   }, []);
 
@@ -159,21 +163,32 @@ export function ScreenScanLocal() {
     const templates = templatesRef.current!;
     const { holeZones, boardZones } = autoDetectCards(canvas, bounds);
 
-    if (!holeZones) return; // cards not dealt yet
+    if (!holeZones) {
+      setScanStatus(`Стол${bounds ? '' : ' не найден'}. Карт не видно — жди раздачи или выбери окно с покером`);
+      return;
+    }
 
     // Detect rank+suit for each found zone
     const rawHole: (string | null)[] = holeZones.map(z => detectCard(canvas, z, templates));
-    if (rawHole.some(c => c === null)) return; // can't read one of the cards clearly
 
-    const finalHole = rawHole as string[];
-    // Apply manual overrides (tap-to-correct)
-    const holeWithOverrides = finalHole.map((c, i) => overrides.current.get(`hole_${i}`) ?? c);
+    // Apply manual overrides BEFORE null-check so user corrections always count
+    const holeWithOverrides = rawHole.map((c, i) => overrides.current.get(`hole_${i}`) ?? c);
+
+    // If any hole card still unreadable, show which slot failed and bail
+    if (holeWithOverrides.some(c => c === null)) {
+      const missing = holeWithOverrides.map((c, i) => c === null ? `карта ${i + 1}` : null).filter(Boolean).join(', ');
+      setScanStatus(`OCR не читает: ${missing} — нажми на карту ниже для ручного ввода`);
+      return;
+    }
+
+    const finalHole = holeWithOverrides as string[];
 
     const detectedBoard: string[] = boardZones
       .map(z => detectCard(canvas, z, templates))
       .filter((c): c is string => c !== null);
 
-    setDebugCards([...holeWithOverrides, ...detectedBoard]);
+    setScanStatus(null);
+    setDebugCards([...finalHole, ...detectedBoard]);
     lastScanTimeRef.current = Date.now();
     busyRef.current = true;
     setAnalyzing(true);
@@ -183,7 +198,7 @@ export function ScreenScanLocal() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          holeCards:  holeWithOverrides,
+          holeCards:  finalHole,
           boardCards: detectedBoard,
           potSize:    potSize   ?? undefined,
           betToCall:  betToCall ?? undefined,
@@ -192,10 +207,16 @@ export function ScreenScanLocal() {
         }),
       });
 
-      if (!res.ok) { lastScanTimeRef.current = Date.now() + 3_000; return; }
+      if (!res.ok) {
+        let errMsg = `Ошибка сервера ${res.status}`;
+        try { const j = await res.json(); errMsg = j?.error ?? errMsg; } catch { /* noop */ }
+        setScanStatus(errMsg);
+        lastScanTimeRef.current = Date.now() + 3_000;
+        return;
+      }
       let data: any;
-      try { data = await res.json(); } catch { return; }
-      if (!data.ok) return;
+      try { data = await res.json(); } catch { setScanStatus('Ошибка разбора ответа сервера'); return; }
+      if (!data.ok) { setScanStatus(data.error ?? 'Сервер вернул ошибку'); return; }
 
       const newResult = data as ScanResult;
       setResult(newResult);
@@ -256,10 +277,12 @@ export function ScreenScanLocal() {
         const px = wc.getContext('2d')!.getImageData(0, 0, 64, 36).data as Uint8ClampedArray;
         const diff = watchPxRef.current ? frameDiff(watchPxRef.current, px) : 1;
         watchPxRef.current = px.slice();
-        const threshold = hasCardsRef.current ? 0.04 : 0.015;
-        if (diff < threshold) return;
         const now = Date.now();
         if (busyRef.current || now - lastScanTimeRef.current < 700) return;
+        // Always scan if: frame changed enough, OR it's been >4s since last scan (stable screen)
+        const threshold = hasCardsRef.current ? 0.04 : 0.015;
+        const forceByTimeout = now - lastScanTimeRef.current > 4_000;
+        if (diff < threshold && !forceByTimeout) return;
         scanTickRef.current();
       }, 200);
 
@@ -350,16 +373,24 @@ export function ScreenScanLocal() {
             {tableFound === false && (
               <div className="bg-amber-950/40 border border-amber-800/50 rounded-lg p-3 text-sm text-amber-400">
                 <p className="font-bold mb-1">⚠ Зелёный стол не найден</p>
-                <p className="text-amber-600 text-xs">Убедись что окно с покером видно на экране.</p>
+                <p className="text-amber-600 text-xs">Убедись что окно с покером видно на экране. Если стол не зелёный — это ок, детектор продолжает искать карты.</p>
               </div>
             )}
 
-            {/* Debug bar */}
+            {/* Scan status — shows WHY detection is failing */}
+            {scanStatus && !analyzing && (
+              <div className="bg-zinc-900 border border-yellow-800/40 rounded-lg px-3 py-2 flex items-start gap-2">
+                <span className="text-yellow-500 shrink-0 mt-0.5">⚠</span>
+                <span className="text-yellow-400 text-xs leading-relaxed">{scanStatus}</span>
+              </div>
+            )}
+
+            {/* Debug bar — cards last seen by OCR */}
             {debugCards.length > 0 && (
               <div className="bg-zinc-900 border border-zinc-800 rounded px-3 py-1.5 flex gap-2 items-center flex-wrap">
-                <span className="text-zinc-600 text-[10px] uppercase tracking-widest">Пиксели:</span>
+                <span className="text-zinc-600 text-[10px] uppercase tracking-widest">OCR видит:</span>
                 {debugCards.map((c, i) => (
-                  <span key={i} className="text-zinc-400 text-xs font-mono">{c}</span>
+                  <span key={i} className={cn('text-xs font-mono', i < 2 ? 'text-blue-300' : 'text-zinc-400')}>{c}</span>
                 ))}
               </div>
             )}
