@@ -140,12 +140,16 @@ export function ScreenScan() {
   const [autoBet, setAutoBet]         = useState(false);
   const [autoPlayers, setAutoPlayers] = useState(false);
 
-  const videoRef    = useRef<HTMLVideoElement>(null);
-  const canvasRef   = useRef<HTMLCanvasElement>(document.createElement('canvas'));
-  const streamRef   = useRef<MediaStream | null>(null);
-  const loopRef     = useRef<ReturnType<typeof setInterval> | null>(null);
-  const prevPx      = useRef<Uint8ClampedArray | null>(null);
-  const busyRef     = useRef(0); // concurrent Gemini call counter
+  const videoRef      = useRef<HTMLVideoElement>(null);
+  const canvasRef     = useRef<HTMLCanvasElement>(document.createElement('canvas'));
+  const streamRef     = useRef<MediaStream | null>(null);
+  const loopRef       = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Fast watcher: 200ms diff check; separate from full scan canvas
+  const watchCanvasRef  = useRef<HTMLCanvasElement>(document.createElement('canvas'));
+  const watchPxRef      = useRef<Uint8ClampedArray | null>(null);
+  const lastScanTimeRef = useRef<number>(0);
+  const hasCardsRef     = useRef(false);     // adaptive diff threshold
+  const busyRef         = useRef(0);         // concurrent Gemini call counter
 
   // Manual card overrides (user tap-to-correct)
   const overrides   = useRef<Map<string, string>>(new Map()); // slot → card string
@@ -155,46 +159,38 @@ export function ScreenScan() {
     if (loopRef.current) { clearInterval(loopRef.current); loopRef.current = null; }
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
-    prevPx.current = null;
+    watchPxRef.current = null;
     busyRef.current = 0;
+    hasCardsRef.current = false;
+    lastScanTimeRef.current = 0;
     overrides.current.clear();
     setPhase('idle');
     setAnalyzing(false);
     setTableFound(null);
   }, []);
 
-  // ── Scan tick ─────────────────────────────────────────────────────────────
+  // ── Full scan: capture frame → crop → Gemini → update UI ──────────────────
   const scanTick = useCallback(async () => {
-    // Allow up to 2 concurrent Gemini calls — don't block if one is slow
-    if (busyRef.current > 1) return;
+    if (busyRef.current > 0) return; // one at a time
     const video  = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || video.readyState < 2) return;
 
-    // Draw current frame
     const vw = video.videoWidth, vh = video.videoHeight;
     if (!vw || !vh) return;
+
+    // Draw full frame and crop table
     canvas.width = vw; canvas.height = vh;
     canvas.getContext('2d')!.drawImage(video, 0, 0);
 
-    // Skip if frame barely changed
-    const ctx  = canvas.getContext('2d')!;
-    const px   = ctx.getImageData(0, 0, Math.min(vw, 640), Math.min(vh, 360)).data;
-    if (prevPx.current && frameDiff(prevPx.current, px) < 0.015) return;
-    prevPx.current = px.slice();
-
-    // Find green table
     const bounds = findTableBounds(canvas);
     setTableFound(bounds !== null);
 
-    let jpeg: string;
-    if (bounds) {
-      jpeg = cropToJpeg(canvas, bounds.x, bounds.y, bounds.w, bounds.h);
-    } else {
-      // No green detected — send scaled-down full frame
-      jpeg = cropToJpeg(canvas, 0, 0, vw, vh, 0.80);
-    }
+    const jpeg = bounds
+      ? cropToJpeg(canvas, bounds.x, bounds.y, bounds.w, bounds.h)
+      : cropToJpeg(canvas, 0, 0, vw, vh, 0.72);
 
+    lastScanTimeRef.current = Date.now();
     busyRef.current++;
     setAnalyzing(true);
 
@@ -206,53 +202,41 @@ export function ScreenScan() {
           image: jpeg,
           position,
           players,
-          potSizeOverride:    potSize  ?? undefined,
-          betToCallOverride:  betToCall ?? undefined,
+          potSizeOverride:   potSize   ?? undefined,
+          betToCallOverride: betToCall ?? undefined,
         }),
       });
 
-      if (!res.ok) return; // server error — skip frame
-
+      if (!res.ok) return;
       let data: any;
-      try { data = await res.json(); } catch { return; } // truncated response
-
-      if (!data.ok) {
-        // Gemini couldn't see cards this frame — keep last result
-        return;
-      }
+      try { data = await res.json(); } catch { return; }
+      if (!data.ok) return; // no cards this frame
 
       const newResult = data as ScanResult;
       setResult(newResult);
       setScanCount(c => c + 1);
       setLastScan(new Date().toLocaleTimeString());
+      hasCardsRef.current = true;
 
-      // Parse cards for display
-      const hParsed = (newResult.holeCards as string[]).map(s => { try { return parseCard(s); } catch { return null; } }).filter(Boolean) as Card[];
-      const bParsed = (newResult.boardCards as string[]).map(s => { try { return parseCard(s); } catch { return null; } }).filter(Boolean) as Card[];
+      const hParsed = (newResult.holeCards as string[])
+        .map(s => { try { return parseCard(s); } catch { return null; } })
+        .filter(Boolean) as Card[];
+      const bParsed = (newResult.boardCards as string[])
+        .map(s => { try { return parseCard(s); } catch { return null; } })
+        .filter(Boolean) as Card[];
 
-      // Apply manual overrides
-      const finalHole = hParsed.map((c, i) => {
+      setHoleCards(hParsed.map((c, i) => {
         const ov = overrides.current.get(`hole_${i}`);
         return ov ? (parseCard(ov) ?? c) : c;
-      });
-
-      setHoleCards(finalHole);
+      }));
       setBoardCards(bParsed);
       setHoleStrs(newResult.holeCards);
       setBoardStrs(newResult.boardCards);
 
-      // Sync auto-detected values (only if user hasn't manually set them)
-      if (newResult.potSize > 0 && potSize === null) {
-        setPotSize(newResult.potSize); setAutoPot(true);
-      }
-      if (newResult.betToCall > 0 && betToCall === null) {
-        setBetToCall(newResult.betToCall); setAutoBet(true);
-      }
-      if (newResult.players > 0) {
-        setPlayers(newResult.players); setAutoPlayers(true);
-      }
+      if (newResult.potSize > 0 && potSize === null)   { setPotSize(newResult.potSize);     setAutoPot(true); }
+      if (newResult.betToCall > 0 && betToCall === null){ setBetToCall(newResult.betToCall); setAutoBet(true); }
+      if (newResult.players > 0)                        { setPlayers(newResult.players);     setAutoPlayers(true); }
     } catch (err: any) {
-      // Network or server error — ignore this tick
       console.warn('vision/scan error:', err?.message);
     } finally {
       busyRef.current = Math.max(0, busyRef.current - 1);
@@ -260,17 +244,19 @@ export function ScreenScan() {
     }
   }, [position, players, potSize, betToCall]);
 
-  // Keep scanTick ref fresh without recreating the interval
   const scanTickRef = useRef(scanTick);
   useEffect(() => { scanTickRef.current = scanTick; }, [scanTick]);
 
-  // ── Start capture ─────────────────────────────────────────────────────────
+  // ── Fast watcher: 200ms — detects state changes, fires scan immediately ────
+  // No Gemini here — just a tiny 64×36 pixel diff to detect new cards / board.
+  // Adaptive threshold: cards unknown → 1.5 % (catch deal); cards known → 4 %
+  // (ignore chip animations, timer bar, bet amounts updating mid-action).
   const startCapture = useCallback(async () => {
     setError(null);
     setPhase('requesting');
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 5, max: 10 }, displaySurface: 'window' } as MediaTrackConstraints,
+        video: { frameRate: { ideal: 10, max: 15 }, displaySurface: 'window' } as MediaTrackConstraints,
         audio: false,
       });
       streamRef.current = stream;
@@ -282,10 +268,34 @@ export function ScreenScan() {
       await video.play().catch(() => {});
       setPhase('scanning');
 
-      // Start scan loop — 2.5 s interval
-      loopRef.current = setInterval(() => { scanTickRef.current(); }, 1500);
-      // First tick immediately after a short wait for video to populate
-      setTimeout(() => { scanTickRef.current(); }, 600);
+      const wc = watchCanvasRef.current;
+      wc.width = 64; wc.height = 36;
+
+      loopRef.current = setInterval(() => {
+        if (!video || video.readyState < 2) return;
+
+        // Tiny 64×36 diff — costs ~0.1 ms
+        wc.getContext('2d')!.drawImage(video, 0, 0, 64, 36);
+        const px = wc.getContext('2d')!.getImageData(0, 0, 64, 36).data as Uint8ClampedArray;
+
+        const diff = watchPxRef.current ? frameDiff(watchPxRef.current, px) : 1;
+        watchPxRef.current = px.slice();
+
+        // Adaptive threshold
+        const threshold = hasCardsRef.current ? 0.04 : 0.015;
+        if (diff < threshold) return; // cosmetic change — skip
+
+        // Cooldown: min 800 ms between scans (Gemini needs time)
+        const now = Date.now();
+        if (busyRef.current > 0) return;
+        if (now - lastScanTimeRef.current < 800) return;
+
+        // Significant change detected — scan NOW
+        scanTickRef.current();
+      }, 200);
+
+      // First scan after video stabilises
+      setTimeout(() => scanTickRef.current(), 500);
     } catch (err: any) {
       setError(
         err?.name === 'NotAllowedError'
