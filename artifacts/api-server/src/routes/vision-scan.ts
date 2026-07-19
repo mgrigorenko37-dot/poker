@@ -374,6 +374,98 @@ router.post("/vision/scan", async (req, res) => {
   res.json({ ok: true, ...output });
 });
 
+// ── /api/vision/scan-cards ─────────────────────────────────────────────────────
+// Like /api/vision/scan but card data is supplied by the client (pixel detector).
+// No Gemini call — runs the full GTO pipeline on pre-parsed card strings.
+router.post("/vision/scan-cards", (req, res) => {
+  const {
+    holeCards,
+    boardCards = [],
+    potSize: clientPot,
+    betToCall: clientBet,
+    players = 4,
+    position = "BTN",
+    lastAction = null,
+  } = req.body;
+
+  if (!Array.isArray(holeCards) || holeCards.length !== 2) {
+    res.status(400).json({ ok: false, error: "holeCards must be array of 2 strings" });
+    return;
+  }
+
+  const holeStrings = holeCards as string[];
+  const boardStrings = boardCards as string[];
+
+  let hole;
+  try {
+    hole = holeStrings.map(parseCard);
+  } catch (e: any) {
+    res.json({ ok: false, error: `Invalid hole card: ${e.message}` });
+    return;
+  }
+
+  const validBoardStrings: string[] = [];
+  const board: ReturnType<typeof parseCard>[] = [];
+  for (const s of boardStrings) {
+    try { board.push(parseCard(s)); validBoardStrings.push(s); } catch { /* skip */ }
+  }
+
+  const finalPot     = clientPot  ?? 0;
+  const finalBet     = clientBet  ?? 0;
+  const finalPlayers = Math.max(2, Math.min(9, players));
+  const isPreflop    = board.length === 0;
+
+  const sprAdvice    = getSPRAdvice(null, finalPot, null, isPreflop);
+  const betSizePct   = finalPot > 0 && finalBet > 0 ? Math.round((finalBet / finalPot) * 100) : null;
+  const boardTexture = !isPreflop ? getBoardTexture(board, hole, betSizePct) : null;
+  const currentHistory = getHandHistory();
+  const narrowed     = narrowVillainRange(currentHistory.actions, currentHistory.street);
+  const sim          = runMonteCarloSim(hole, board, finalPlayers, 1200, narrowed.rangeKeys);
+  const advice       = getFullAdvice(hole, board, finalPot, finalBet, finalPlayers, position, sim, 1.0, sprAdvice?.stackBBs ?? 100, "");
+
+  const output: any = {
+    ok: true,
+    holeCards: holeStrings,
+    boardCards: validBoardStrings,
+    action: advice.action,
+    displayText: advice.displayText,
+    color: advice.color,
+    details: advice.details,
+    equity: advice.equity,
+    potOdds: advice.potOdds,
+    mdf: advice.mdf,
+    handCategory: advice.handCategory,
+    handName: advice.handName,
+    draws: advice.draws,
+    bluffRead: advice.bluffRead,
+    potSize: finalPot,
+    betToCall: finalBet,
+    players: finalPlayers,
+    position,
+    usedRangeVsRange: sim.usedRangeVsRange,
+    villainRangePct: narrowed.rangePct,
+    boardTexture: boardTexture ? {
+      wetness: boardTexture.wetness, label: boardTexture.label,
+      heroConnectionNote: boardTexture.heroConnectionNote,
+      heroStrategyNote: boardTexture.heroStrategyNote,
+    } : null,
+    ts: Date.now(),
+  };
+
+  broadcastAnalysis(output);
+
+  const trigger = updateHandState(holeStrings, validBoardStrings, advice.displayText, finalPot, finalBet, lastAction);
+  const handHistory = getHandHistory();
+  const opponentProfile = getOpponentSummary();
+  if (trigger) fireTelegram({ ...output, handHistory, opponentProfile }, trigger);
+
+  logger.info(
+    { action: advice.displayText, equity: Math.round(advice.equity * 100), hole: holeStrings, board: validBoardStrings },
+    "scan-cards: analysis complete",
+  );
+  res.json(output);
+});
+
 // ── Reset state machine ────────────────────────────────────────────────────────
 // Called by ScreenScan when the session starts/stops so the state is clean.
 router.post("/vision/reset", (_req, res) => {
