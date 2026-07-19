@@ -209,7 +209,11 @@ export function ScreenScan() {
         }),
       });
 
-      if (!res.ok) return;
+      if (!res.ok) {
+        // Rate-limit / server error — back off 5 s before next scan
+        lastScanTimeRef.current = Date.now() + 5_000;
+        return;
+      }
       let data: any;
       try { data = await res.json(); } catch { return; }
       if (!data.ok) return; // no cards this frame

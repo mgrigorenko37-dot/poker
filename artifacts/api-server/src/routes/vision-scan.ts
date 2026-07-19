@@ -54,7 +54,7 @@ stackSize=hero effective stack in chips (the smaller of the two stacks in play),
 bbSize=big blind size in chips (e.g. 5, 10, 25), null if not visible.`;
 
 // Models to try in order (fastest first — standard Google API names)
-const MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"];
+const MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash"];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -141,10 +141,15 @@ router.post("/vision/scan", async (req, res) => {
       const isRetryable = status === 503 || status === 429 || err?.name === "AbortError";
       if (isRetryable && attempt < MODELS.length - 1) {
         logger.warn({ model: modelName, status }, "vision/scan: retrying with fallback model");
-        await new Promise((r) => setTimeout(r, 200));
+        // Longer delay for rate-limit (429) to let the quota window reset
+        const delay = status === 429 ? 1500 : 300;
+        await new Promise((r) => setTimeout(r, delay));
         continue;
       }
-      throw err;
+      // All models failed — return 503, don't leak Gemini's status code
+      logger.error({ err, model: modelName, status }, "vision/scan: all models failed");
+      res.status(503).json({ ok: false, error: "Vision API unavailable, try again", geminiStatus: status });
+      return;
     }
   }
 
