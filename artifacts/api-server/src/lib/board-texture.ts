@@ -140,18 +140,41 @@ function scoreHeroConnection(hole: Card[], board: Card[]): { score: 0 | 1 | 2 | 
     }
   }
 
-  // Straight draw with hole cards (at least one hole card within 4 ranks of 2 board cards)
-  const allRanks = [...board.map(c => c.rank), ...hole.map(c => c.rank)];
-  const uniqueAll = [...new Set(allRanks)].sort((a, b) => a - b);
-  let straightDraw = false;
-  for (let i = 0; i < uniqueAll.length - 1; i++) {
-    if (uniqueAll[i + 1] - uniqueAll[i] <= 4) {
-      // Check if at least one hole card contributes to this stretch
-      const holeRanks = new Set(hole.map(c => c.rank));
-      if (holeRanks.has(uniqueAll[i]) || holeRanks.has(uniqueAll[i + 1])) {
-        straightDraw = true;
-        break;
-      }
+  // Straight draw with hole cards — sliding 5-card window approach.
+  //
+  // A hero straight draw is real only when hero + board together fill exactly
+  // 4 of 5 consecutive ranks (one card missing = turn or river completes it).
+  // The old gap-≤4 check was too loose: on 9♦ 5♣ 2♠ with J♥ 9♥ it fired
+  // because gap(5→9)=4 and 9 is in hero's hand, but J-9 on 9-5-2 gives no
+  // real draw (would need three specific cards to complete a straight).
+  //
+  // New rule:
+  //   For each 5-rank window [lo … lo+4]:
+  //     boardHits  = board ranks in window
+  //     holeHits   = hole ranks in window
+  //     totalHits  = unique (board ∪ hole) ranks in window
+  //     missing    = 5 - totalHits
+  //   Hero has a real straight draw iff:
+  //     boardHits ≥ 1  (anchored to the board)
+  //     holeHits  ≥ 1  (hero contributes at least one card)
+  //     missing   == 1  (exactly one card to complete — OESD or gutshot)
+  const holeRanks    = new Set(hole.map(c => c.rank));
+  const boardRankSet = new Set(board.map(c => c.rank));
+  let straightDraw   = false;
+  for (let lo = 2; lo <= 10 && !straightDraw; lo++) {
+    let boardHits = 0;
+    let holeHits  = 0;
+    let totalHits = 0;
+    for (let r = lo; r <= lo + 4; r++) {
+      const onBoard = boardRankSet.has(r);
+      const inHole  = holeRanks.has(r);
+      if (onBoard || inHole) totalHits++;
+      if (onBoard) boardHits++;
+      if (inHole)  holeHits++;
+    }
+    const missing = 5 - totalHits;
+    if (boardHits >= 1 && holeHits >= 1 && missing === 1) {
+      straightDraw = true;
     }
   }
   if (straightDraw) {
