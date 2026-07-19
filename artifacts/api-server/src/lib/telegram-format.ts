@@ -1,21 +1,17 @@
 /**
- * Telegram message formatter — максимально информативно за минимум строк.
+ * Telegram message formatter — ДЕЙСТВИЕ ПЕРВОЕ.
  *
- * Игрок должен понять что делать за < 1 секунды. Формат:
+ * Структура сообщения:
  *
- *   🔺 RAISE  2.5BB
- *   A♥ K♦  ·  префлоп  ·  BTN  4p
- *   Win 67%
- *   Агрессор: UTG (~15% рук)
+ *   🔺 RAISE  2.5BB          ← главное, жирно, сразу
+ *   Win 67%  ·  пот-оддс 24%  ← математика решения
+ *   A♥ K♦  ·  J♥ 4♠ 2♣  ·  BTN 4p  ← контекст
+ *   🟡 SPR 3.2 — топ-пара = шов      ← одна строка, самый важный довод
+ *   📊 TAG(8р) · VPIP20/PFR16 · AF2.4 · ⚡ атакуй его чек
+ *   🎴 🌊 влажная · флеш-дро, OESD · ↪ C-bet = блеф/полублеф
  *
- *   🟢 CALL  (колл ≈1.20)
- *   A♥ K♦  ·  J♥ 4♠ 2♣ 10♥  ·  CO  3p
- *   Win 58%  ·  пот-оддс 24%
- *   Flush draw — 9 аутов (37% до ривера)
- *
- *   🔻 FOLD
- *   7♥ 2♦  ·  J♥ 4♠ 2♣ 10♥ 9♦  ·  BB  5p
- *   Win 14%  ·  пот-оддс 33%
+ * Не используем многострочные блоки. Каждая строка — одна мысль.
+ * История рук и детали диапазона убраны — бот принимает решение за тебя.
  */
 
 const SUIT_SYM: Record<string, string> = { h: "♥", d: "♦", c: "♣", s: "♠" };
@@ -51,7 +47,6 @@ export function buildTelegramText(body: {
   action?:      string;
   sizing?:      string | null;
   equity?:      number;
-  // расширенные поля — передаются из полного результата анализа
   potOdds?:     number | null;
   position?:    string;
   players?:     number;
@@ -112,135 +107,97 @@ export function buildTelegramText(body: {
     telegramLine: string;
   } | null;
 }): string {
-  const action  = body.displayText ?? body.action ?? "?";
-  const emoji   = ACTION_EMOJI[action] ?? "❓";
-  const winPct  = Math.round((body.equity ?? 0) * 100);
-  const board   = body.boardCards ?? [];
+  const action   = body.displayText ?? body.action ?? "?";
+  const emoji    = ACTION_EMOJI[action] ?? "❓";
+  const winPct   = Math.round((body.equity ?? 0) * 100);
+  const board    = body.boardCards ?? [];
   const isPreflop = board.length === 0;
 
-  // ── Строка 1: действие + сайзинг ────────────────────────────────────────────
+  // ── Строка 1: ДЕЙСТВИЕ (главное) ─────────────────────────────────────────
   let sizingStr = "";
-  if (body.sizing) {
-    sizingStr = `  ${body.sizing}`;
-  }
-  // Для колла добавляем сумму в $ если известна
-  if ((action === "CALL") && body.betToCall && body.betToCall > 0) {
-    sizingStr += `  (колл ≈${body.betToCall.toFixed(2)})`;
+  if (body.sizing) sizingStr = `  ${body.sizing}`;
+  if (action === "CALL" && body.betToCall && body.betToCall > 0) {
+    sizingStr += `  (≈${body.betToCall.toFixed(0)})`;
   }
   const line1 = `${emoji} <b>${action}</b>${sizingStr}`;
 
-  // ── Строка 2: карты + позиция + число игроков ────────────────────────────────
-  const holeStr  = body.holeCards.map(fmtCard).join(" ");
-  const boardStr = isPreflop ? "префлоп" : board.map(fmtCard).join(" ");
-  const posStr   = body.position ? `  ·  ${body.position}` : "";
-  const playersStr = body.players && body.players > 1 ? `  ${body.players}p` : "";
-  const line2 = `${holeStr}  ·  ${boardStr}${posStr}${playersStr}`;
-
-  // ── Строка 3: win% + пот-оддс ────────────────────────────────────────────────
-  const winStr   = `Win ${winPct}%`;
-  const oddsStr  = (body.potOdds && body.potOdds > 0)
+  // ── Строка 2: математика решения ─────────────────────────────────────────
+  const oddsStr = (body.potOdds && body.potOdds > 0)
     ? `  ·  пот-оддс ${Math.round(body.potOdds * 100)}%`
     : "";
-  const line3 = `${winStr}${oddsStr}`;
 
-  // ── Строка 4 (опционально): ключевая инфо ────────────────────────────────────
-  // Приоритет: дро → агрессор (из details) → пусто
-  let line4 = "";
-
+  // Для draws — добавляем количество аутов рядом с win%
+  let drawStr = "";
   if (body.draws) {
     const d = body.draws;
     if (d.flushDraw && (d.oesd || d.gutshot)) {
-      line4 = `Комбо-дро — ${d.totalOuts} аутов (${Math.round(d.equityRiver)}% до ривера)`;
+      drawStr = `  ·  комбо-дро ${d.totalOuts}аут`;
     } else if (d.flushDraw) {
-      line4 = `Flush draw — ${d.totalOuts} аутов (${Math.round(d.equityRiver)}% до ривера)`;
+      drawStr = `  ·  fd ${d.totalOuts}аут`;
     } else if (d.oesd) {
-      line4 = `OESD — ${d.totalOuts} аутов (${Math.round(d.equityRiver)}% до ривера)`;
+      drawStr = `  ·  OESD ${d.totalOuts}аут`;
     } else if (d.gutshot) {
-      line4 = `Gutshot — ${d.totalOuts} аутов (${Math.round(d.equityRiver)}% до ривера)`;
+      drawStr = `  ·  gs ${d.totalOuts}аут`;
     }
   }
+  const line2 = `Win ${winPct}%${oddsStr}${drawStr}`;
 
-  // Если нет дро — ищем строку об агрессоре или первую деталь из preflopа
-  if (!line4 && body.details?.length) {
-    const aggNote = body.details.find(d => d.startsWith("Агрессор:"));
-    if (aggNote) line4 = aggNote;
-  }
+  // ── Строка 3: карты + позиция (контекст) ─────────────────────────────────
+  const holeStr    = body.holeCards.map(fmtCard).join(" ");
+  const boardStr   = isPreflop ? "преф" : board.map(fmtCard).join(" ");
+  const posStr     = body.position ? `  ·  ${body.position}` : "";
+  const playersStr = body.players && body.players > 1 ? `  ${body.players}р` : "";
+  const line3      = `${holeStr}  ·  ${boardStr}${posStr}${playersStr}`;
 
   const lines = [line1, line2, line3];
-  if (line4) lines.push(line4);
 
-  // ── История руки (этап 2) ─────────────────────────────────────────────────
-  if (body.handHistory?.actions && body.handHistory.actions.length > 0) {
-    const streetOrder = ['preflop', 'flop', 'turn', 'river'];
-    const streetLabel: Record<string, string> = {
-      preflop: 'преф', flop: 'флоп', turn: 'тёрн', river: 'ривер',
-    };
-    const byStreet = new Map<string, string>();
-    for (const a of body.handHistory.actions) {
-      byStreet.set(a.street, a.description);
-    }
-    const historyParts: string[] = [];
-    for (const s of streetOrder) {
-      const desc = byStreet.get(s);
-      if (desc) historyParts.push(`${streetLabel[s] ?? s}: ${desc}`);
-    }
-    if (historyParts.length > 0) {
-      lines.push(`📋 <i>${historyParts.join('  ·  ')}</i>`);
-    }
-  }
-
-  // ── Диапазон оппонента (этап 3 + профиль этап 4) ─────────────────────────
-  if (body.villainRange && body.villainRange.rangePct > 0) {
-    const vr = body.villainRange;
-    const confEmoji = vr.confidence === 'high' ? '🎯' : vr.confidence === 'medium' ? '🔍' : '❓';
-    lines.push(`${confEmoji} ${vr.description}`);
-    if (vr.tendencyNote) {
-      lines.push(`💡 <i>${vr.tendencyNote}</i>`);
-    }
-    // Surface when session profile meaningfully shifted the range vs. action-only
-    if (vr.profileNote) {
-      lines.push(`🧠 <i>${vr.profileNote}</i>`);
-    }
-  }
-
-  // ── SPR (этап 5) ──────────────────────────────────────────────────────────
+  // ── Строка 4: SPR — самый важный структурный довод ───────────────────────
   if (body.sprAdvice) {
     const sp = body.sprAdvice;
-    const stackStr = sp.stackBBs ? ` · стэк ${sp.stackBBs}BB` : '';
-    const sprLabel  = sp.spr > 0 ? `SPR ${sp.spr}` : '';
+    const stackStr = sp.stackBBs ? ` · стэк ${sp.stackBBs}BB` : "";
+    const sprLabel = sp.spr > 0 ? `SPR ${sp.spr}` : "";
     lines.push(`${sp.emoji} ${sprLabel}${stackStr} — ${sp.commitment}`);
   }
 
-  // ── HUD оппонента (этап 4) ────────────────────────────────────────────────
-  // Показываем только когда накоплено достаточно рук и это смена улицы/новая рука.
+  // ── Строка 5: профиль оппонента (компактно: тип + одна метрика-сигнал) ──
   if (body.opponentProfile && body.opponentProfile.handsPlayed >= 3) {
-    const op = body.opponentProfile;
-    const reliable = op.confidence === 'high';
-    const prefix = reliable ? '' : '~';
-    // HUD строка: VPIP/PFR  AF  CB/FtCB
-    const hudLine = `📊 <b>${op.playerType}</b>  (${op.handsPlayed}р) · VPIP ${prefix}${op.vpip}% · PFR ${prefix}${op.pfr}% · AF ${prefix}${op.af}`;
-    const cbLine  = op.cbet > 0
-      ? `   CB ${prefix}${op.cbet}%  FtCB ${prefix}${op.ftCbet}%`
-      : '';
-    lines.push(hudLine + cbLine);
+    const op  = body.opponentProfile;
+    const pfx = op.confidence === 'high' ? '' : '~';
+    // Компактная строка: тип(руки) · VPIP/PFR · одна ключевая метрика + эксплойт
+    const keyMetric = op.cbet > 0
+      ? `CB${pfx}${op.cbet}%`
+      : `AF${pfx}${op.af}`;
+    const hudLine = `📊 ${op.playerType} (${op.handsPlayed}р)  VPIP${pfx}${op.vpip}/PFR${pfx}${op.pfr}  ${keyMetric}`;
+    lines.push(hudLine);
     lines.push(`⚡ <i>${op.exploitNote}</i>`);
   }
 
-  // ── Текстура доски (этап 6) ────────────────────────────────────────────────
+  // ── Строка 6: текстура доски (одна строка с C-bet интерпретацией) ────────
   if (body.boardTexture) {
     const bt = body.boardTexture;
-    lines.push(`🎴 ${bt.telegramLine}`);
-    // Show c-bet interpretation only when villain is betting (betToCall > 0)
-    if (body.betToCall && body.betToCall > 0 && bt.cbetInterpretation) {
-      lines.push(`↪ <i>${bt.cbetInterpretation}</i>`);
-    }
-    // Show hero connection note when it's informative
-    if (bt.heroConnectionNote && bt.heroConnection >= 2) {
-      lines.push(`✅ <i>${bt.heroConnectionNote}</i>`);
-    } else if (bt.heroConnectionNote && bt.heroConnection === 0) {
-      lines.push(`⚠️ <i>${bt.heroConnectionNote}</i>`);
-    }
+    // Компактная строка: влажность + дро + главная интерпретация C-bet (коротко)
+    const cbetShort = body.betToCall && body.betToCall > 0
+      ? `  ↪ ${abbreviateCbet(bt.wetness)}`
+      : "";
+    lines.push(`🎴 ${bt.telegramLine}${cbetShort}`);
+  }
+
+  // ── Профиль-нота (когда сессия сильно сдвинула диапазон) ─────────────────
+  if (body.villainRange?.profileNote) {
+    lines.push(`🧠 <i>${body.villainRange.profileNote}</i>`);
   }
 
   return lines.join("\n");
+}
+
+/** Сокращает C-bet интерпретацию до одной фразы */
+function abbreviateCbet(wetness: string): string {
+  switch (wetness) {
+    case 'monotone': return 'монотонная — бет = рука или блеф';
+    case 'very_wet':
+    case 'wet':      return 'влажная — C-bet = блеф/полублеф';
+    case 'bone_dry':
+    case 'dry':      return 'сухая — C-bet = топ-пара+';
+    default:         return 'C-bet = вэлью или полублеф';
+  }
 }
