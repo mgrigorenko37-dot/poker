@@ -8,6 +8,7 @@ import {
   createDeck, RANK_CHARS, PREFLOP_EQUITY, getHandKey,
   type SimulationResult,
 } from './poker';
+import { getPushFoldAdvice } from './push-fold';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -290,6 +291,27 @@ export function getGTOPreflopAdvice(
   else if (equity >= 67) strength = 'Strong';
   else if (equity >= 60) strength = 'Medium';
   else if (equity >= 54) strength = 'Speculative';
+
+  // ─── Short-stack push/fold path (≤20BB) ─────────────────────────────────────
+  // At short stacks, raising/folding with a normal sizing is dominated: the
+  // opponent can re-shove and force a call-off anyway. Push-or-fold is the
+  // Nash equilibrium solution — collapse the decision to one action.
+  if (stackBBs <= 20) {
+    const percentile = PLAYABILITY_PERCENTILE[key] ?? 100;
+    const pf = getPushFoldAdvice(percentile, position, stackBBs, facingRaise);
+    const freqs: PreflopFrequencies = { raise: pf.frequency, call: 0, fold: 1 - pf.frequency, isMixed: pf.isMixed };
+    const mixNote = pf.isMixed
+      ? ` — микс ${(pf.frequency * 100).toFixed(0)}%/${((1 - pf.frequency) * 100).toFixed(0)}%`
+      : '';
+    const aggressorNote = aggressorPosition ? `Агрессор: ${aggressorPosition}` : '';
+    if (pf.action === 'PUSH') {
+      return { action: 'RAISE', reason: `PUSH ALL-IN (${stackBBs}BB, Nash: топ ${pf.threshold.toFixed(0)}% рук)${mixNote}`, strength, frequencies: freqs, aggressorNote };
+    }
+    if (pf.action === 'CALL') {
+      return { action: 'CALL', reason: `CALL шов (${stackBBs}BB, Nash: топ ${pf.threshold.toFixed(0)}% рук)${mixNote}`, strength, frequencies: freqs, aggressorNote };
+    }
+    return { action: 'FOLD', reason: `FOLD — вне Nash диапазона для ${position} при ${stackBBs}BB (Nash: топ ${pf.threshold.toFixed(0)}%)${mixNote}`, strength, frequencies: freqs, aggressorNote };
+  }
 
   const frequencies = getPreflopFrequencies(key, position, facingRaise, aggressorPosition);
 
@@ -610,6 +632,7 @@ export function getFullAdvice(
   position: string,
   simResult: SimulationResult,
   villainAggression: number = 1.0,
+  stackBBs: number = 100,
   aggressorPosition: string = '',
 ): FullAdvice {
   const w = simResult.winProb;
@@ -664,15 +687,16 @@ export function getFullAdvice(
   // ── PREFLOP ─────────────────────────────────────────────────────────────────
   if (isPreflop) {
     const pos = position as Position;
-    const preflopAdvice = getGTOPreflopAdvice(holeCards, pos, betToCall > 0, 100, aggressorPosition);
+    const preflopAdvice = getGTOPreflopAdvice(holeCards, pos, betToCall > 0, stackBBs, aggressorPosition);
 
     if (preflopAdvice.action === '3BET') {
       action = 'RAISE'; displayText = '3BET'; color = 'bg-purple-600';
       details.push(preflopAdvice.reason);
       details.push(`Сила руки: ${preflopAdvice.strength}`);
     } else if (preflopAdvice.action === 'RAISE') {
-      action = 'RAISE'; displayText = 'RAISE'; color = 'bg-emerald-600';
-      sizing = '2.5BB';
+      const isShove = stackBBs <= 20;
+      action = 'RAISE'; displayText = isShove ? 'PUSH' : 'RAISE'; color = isShove ? 'bg-amber-500' : 'bg-emerald-600';
+      sizing = isShove ? 'ALL-IN' : '2.5BB';
       details.push(preflopAdvice.reason);
     } else if (preflopAdvice.action === 'CALL') {
       action = 'CALL'; displayText = 'CALL'; color = 'bg-blue-600';

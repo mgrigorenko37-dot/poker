@@ -232,7 +232,7 @@ router.post("/vision/scan", async (req, res) => {
   const narrowed = narrowVillainRange(currentHistory.actions, currentHistory.street);
 
   const sim    = runMonteCarloSim(hole, board, finalPlayers, 1200, narrowed.rangeKeys);
-  const advice = getFullAdvice(hole, board, finalPot, finalBet, finalPlayers, position, sim, 1.0, "");
+  const advice = getFullAdvice(hole, board, finalPot, finalBet, finalPlayers, position, sim, 1.0, sprAdvice?.stackBBs ?? 100, "");
 
   const output = {
     holeCards: holeStrings,

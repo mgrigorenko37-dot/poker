@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Card as CardType, evaluateHand, runMonteCarloSim, calculateOuts, getPreflopEquity, SimulationResult, HandRank, RANK_CHARS, SUIT_CHARS } from '@/lib/poker';
+import { getGTOPreflopAdvice, type Position } from '@/lib/poker-gto';
 import { CardPicker, CardDisplay } from './CardPicker';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -19,6 +20,7 @@ export function HandAnalyzer() {
   const [betToCall, setBetToCall] = useState<number>(50);
   const [myStack, setMyStack] = useState<number>(1000);
   const [villainStack, setVillainStack] = useState<number>(1000);
+  const [stackBBs, setStackBBs] = useState<number>(100);
 
   const [simResult, setSimResult] = useState<SimulationResult | null>(null);
   const [isSimulating, setIsSimulating] = useState(false);
@@ -85,8 +87,18 @@ export function HandAnalyzer() {
   const potOdds = betToCall > 0 ? (betToCall / (potSize + betToCall)) : 0;
   
   let recommendation = { action: 'CHECK', color: 'bg-zinc-600', text: 'Waiting for inputs' };
-  
-  if (simResult) {
+
+  // Short-stack preflop: use Nash push/fold tables instead of equity heuristic
+  if (validHoleCards.length === 2 && validBoardCards.length === 0 && stackBBs <= 20) {
+    const pfAdvice = getGTOPreflopAdvice(validHoleCards, position as Position, betToCall > 0, stackBBs);
+    if (pfAdvice.action === 'RAISE') {
+      recommendation = { action: 'PUSH ALL-IN', color: 'bg-amber-500', text: pfAdvice.reason };
+    } else if (pfAdvice.action === 'CALL') {
+      recommendation = { action: 'CALL PUSH', color: 'bg-blue-600', text: pfAdvice.reason };
+    } else {
+      recommendation = { action: 'FOLD', color: 'bg-red-700', text: pfAdvice.reason };
+    }
+  } else if (simResult) {
     const winProb = simResult.winProb;
     
     if (betToCall === 0) {
@@ -168,6 +180,18 @@ export function HandAnalyzer() {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
+              <Label className="text-zinc-400 text-xs tracking-widest uppercase">
+                Stack (BB)
+                {stackBBs <= 20 && <span className="ml-2 text-amber-400 normal-case">— push/fold</span>}
+              </Label>
+              <Input
+                type="number"
+                value={stackBBs}
+                onChange={e => setStackBBs(Math.max(1, Number(e.target.value) || 1))}
+                className="bg-zinc-950 border-zinc-800 font-mono text-lg"
+              />
+            </div>
+            <div className="space-y-2">
               <Label className="text-zinc-400 text-xs tracking-widest uppercase">Pot Size ($)</Label>
               <Input 
                 type="number" 
@@ -176,6 +200,9 @@ export function HandAnalyzer() {
                 className="bg-zinc-950 border-zinc-800 font-mono text-lg"
               />
             </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label className="text-zinc-400 text-xs tracking-widest uppercase">Bet to Call ($)</Label>
               <Input 
