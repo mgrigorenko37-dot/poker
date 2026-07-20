@@ -41,14 +41,26 @@ function findTableBounds(canvas: HTMLCanvasElement): { x: number; y: number; w: 
       count++;
     }
   }
-  // Lowered from 5% → 2% — dark/blue tables have less green
-  if (count < sw * sh * 0.02) return null;
+  // Need a minimum absolute count of green pixels
+  if (count < 200) return null;
+
+  const boxW = Math.max(1, maxX - minX);
+  const boxH = Math.max(1, maxY - minY);
+  // Density check: green pixels must fill ≥8% of their own bounding box.
+  // Real table oval: ~50-70% density. Scattered desktop icons: <2%.
+  // This prevents the whole screen from being detected as the "table".
+  const density = count / (boxW * boxH);
+  if (density < 0.08) return null;
+
+  // Table must be at least 10% of the captured frame width to avoid tiny logo false-positives
+  if (boxW < sw * 0.10) return null;
+
   const pad = Math.round(30 / scale);
   return {
     x: Math.max(0, Math.round(minX / scale) - pad),
     y: Math.max(0, Math.round(minY / scale) - pad),
-    w: Math.min(W, Math.round((maxX - minX) / scale) + pad * 2),
-    h: Math.min(H, Math.round((maxY - minY) / scale) + pad * 2),
+    w: Math.min(W, Math.round(boxW / scale) + pad * 2),
+    h: Math.min(H, Math.round(boxH / scale) + pad * 2),
   };
 }
 
