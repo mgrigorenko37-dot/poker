@@ -53,43 +53,9 @@ lastAction=last visible action text from HUD/chat log (e.g. "raised to 12", "che
 stackSize=hero effective stack in chips (the smaller of the two stacks in play), null if not visible.
 bbSize=big blind size in chips (e.g. 5, 10, 25), null if not visible.`;
 
-// Models via SDK (v1beta) — ordered fastest/cheapest first.
-// gemini-2.5-flash-lite → gemini-2.5-flash → gemini-2.0-flash → gemini-2.0-flash-lite
-const SDK_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash-lite", "gemini-2.0-flash"];
-
-// ── v1 REST fallback: gemini-1.5-flash via direct fetch ───────────────────────
-// The @google/generative-ai SDK uses v1beta where gemini-1.5-flash is unavailable.
-// The v1 REST endpoint supports it and has a separate free-tier quota bucket.
-async function callGemini15FlashV1(imageBase64: string, signal: AbortSignal): Promise<string> {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) throw new Error("GEMINI_API_KEY is not set");
-
-  const body = {
-    contents: [{
-      parts: [
-        { inline_data: { mime_type: "image/jpeg", data: imageBase64 } },
-        { text: VISION_PROMPT },
-      ],
-    }],
-    generationConfig: { temperature: 0, maxOutputTokens: 256 },
-  };
-
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${key}`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal },
-  );
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    const err: any = new Error(`[v1 REST] gemini-1.5-flash: ${res.status} ${res.statusText}`);
-    err.status = res.status;
-    err.body = errText;
-    throw err;
-  }
-
-  const data = await res.json() as any;
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-}
+// Models via SDK (v1beta) — free-tier models only, fastest first.
+// gemini-2.0-flash-lite is fastest/cheapest; gemini-2.0-flash is the reliable fallback.
+const SDK_MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash"];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -136,7 +102,6 @@ router.post("/vision/scan", async (req, res) => {
     },
   ];
 
-  let sdkFailed = false;
   for (let attempt = 0; attempt < SDK_MODELS.length; attempt++) {
     const modelName = SDK_MODELS[attempt];
     const controller = new AbortController();
@@ -167,26 +132,8 @@ router.post("/vision/scan", async (req, res) => {
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
-      logger.warn({ model: modelName, status }, "vision/scan: SDK models exhausted, trying v1 REST");
-      sdkFailed = true;
-      break;
-    }
-  }
-
-  // ── Step 2: v1 REST fallback — gemini-1.5-flash ───────────────────────────
-  // Separate quota bucket from v1beta; works on free tier where 2.0 models don't.
-  if (sdkFailed && !parsed) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
-    try {
-      const raw = await callGemini15FlashV1(image, controller.signal);
-      clearTimeout(timer);
-      accumulated = raw;
-    } catch (err: any) {
-      clearTimeout(timer);
-      const status = err?.status ?? 0;
-      logger.error({ err, status }, "vision/scan: all models failed including v1 REST");
-      res.status(503).json({ ok: false, error: "Vision API unavailable — all models rate-limited or unavailable", geminiStatus: status });
+      logger.error({ model: modelName, status }, "vision/scan: all SDK models failed");
+      res.status(503).json({ ok: false, error: "Vision API unavailable — try again in a moment", geminiStatus: status });
       return;
     }
   }
