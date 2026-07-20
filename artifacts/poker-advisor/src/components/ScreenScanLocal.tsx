@@ -118,6 +118,8 @@ export function ScreenScanLocal() {
   const [debugCards, setDebugCards] = useState<string[]>([]);
   // Detailed scan diagnostics shown to user so they can see what's failing
   const [scanStatus, setScanStatus] = useState<string | null>(null);
+  // Manual hole-card overrides (always shown so user can enter cards when OCR fails)
+  const [manualHole, setManualHole] = useState<(Card | null)[]>([null, null]);
 
   const [position, setPosition]   = useState<Position>('BTN');
   const [players, setPlayers]     = useState(4);
@@ -152,6 +154,7 @@ export function ScreenScanLocal() {
     setAnalyzing(false);
     setTableFound(null);
     setScanStatus(null);
+    setManualHole([null, null]);
     fetch('/api/vision/reset', { method: 'POST' }).catch(() => {});
   }, []);
 
@@ -175,30 +178,36 @@ export function ScreenScanLocal() {
     const templates = templatesRef.current!;
     const { holeZones, boardZones, debug } = autoDetectCards(canvas, bounds);
 
-    if (!holeZones) {
+    // Check if user manually entered both hole cards — bypass pixel detection entirely
+    const m0 = overrides.current.get('hole_0');
+    const m1 = overrides.current.get('hole_1');
+    const fullyManual = !!(m0 && m1);
+
+    let finalHole: string[];
+
+    if (fullyManual) {
+      finalHole = [m0!, m1!];
+      setScanStatus(null);
+    } else if (!holeZones) {
       const tableStr = bounds ? `✅ Стол (${bounds.w}×${bounds.h}px)` : '❌ Стол не найден';
       const holeStr  = debug.holeRunsTotal === 0
         ? '❌ hole-зон: 0'
         : `⚠ hole-зон: ${debug.holeRunsTotal} (нужно 2)`;
       const boardStr = `board-зон: ${debug.boardRunsTotal}`;
-      setScanStatus(`${tableStr} | ${holeStr} | ${boardStr}${debug.holeRunsTotal === 0 ? ' — убедись что идёт раздача' : ' — слишком много/мало зон'}`);
+      setScanStatus(`${tableStr} | ${holeStr} | ${boardStr} — введи карты вручную ниже`);
       return;
+    } else {
+      // Pixel detection found zones → OCR them
+      const rawHole: (string | null)[] = holeZones.map(z => detectCard(canvas, z, templates));
+      const holeWithOverrides = rawHole.map((c, i) => overrides.current.get(`hole_${i}`) ?? c);
+
+      if (holeWithOverrides.some(c => c === null)) {
+        const missing = holeWithOverrides.map((c, i) => c === null ? `карта ${i + 1}` : null).filter(Boolean).join(', ');
+        setScanStatus(`OCR не читает: ${missing} — нажми на карту ниже для ручного ввода`);
+        return;
+      }
+      finalHole = holeWithOverrides as string[];
     }
-
-    // Detect rank+suit for each found zone
-    const rawHole: (string | null)[] = holeZones.map(z => detectCard(canvas, z, templates));
-
-    // Apply manual overrides BEFORE null-check so user corrections always count
-    const holeWithOverrides = rawHole.map((c, i) => overrides.current.get(`hole_${i}`) ?? c);
-
-    // If any hole card still unreadable, show which slot failed and bail
-    if (holeWithOverrides.some(c => c === null)) {
-      const missing = holeWithOverrides.map((c, i) => c === null ? `карта ${i + 1}` : null).filter(Boolean).join(', ');
-      setScanStatus(`OCR не читает: ${missing} — нажми на карту ниже для ручного ввода`);
-      return;
-    }
-
-    const finalHole = holeWithOverrides as string[];
 
     const detectedBoard: string[] = boardZones
       .map(z => detectCard(canvas, z, templates))
@@ -318,7 +327,8 @@ export function ScreenScanLocal() {
   const handleHoleOverride = useCallback((idx: number, card: Card) => {
     const str = `${'23456789TJQKA'[card.rank - 2]}${'hdcs'[['h','d','c','s'].indexOf(card.suit)]}`;
     overrides.current.set(`hole_${idx}`, str);
-    setHoleCards(prev => prev.map((c, i) => i === idx ? card : c));
+    setHoleCards(prev => prev.length > 0 ? prev.map((c, i) => i === idx ? card : c) : prev);
+    setManualHole(prev => prev.map((c, i) => i === idx ? card : c));
   }, []);
 
   const advice = result;
@@ -524,47 +534,57 @@ export function ScreenScanLocal() {
               </div>
             )}
 
-            {/* Detected cards (tap to correct) */}
-            {(holeCards.length > 0 || boardCards.length > 0) && (
-              <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 space-y-2">
-                {holeCards.length > 0 && (
-                  <div>
-                    <p className="text-zinc-600 text-xs uppercase tracking-widest mb-1.5">
-                      Мои карты <span className="text-zinc-700 normal-case">(тапни чтобы исправить)</span>
-                    </p>
-                    <div className="flex gap-2">
-                      {holeCards.map((c, i) => (
-                        <CardPicker
-                          key={i}
-                          selectedCard={c}
-                          disabledCards={[...holeCards, ...boardCards].filter(x => x !== c)}
-                          onSelect={(card) => card && handleHoleOverride(i, card)}
-                          trigger={
+            {/* Hole cards — always shown when scanning so user can enter manually */}
+            <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 space-y-2">
+              <div>
+                <p className="text-zinc-600 text-xs uppercase tracking-widest mb-1.5">
+                  Мои карты{' '}
+                  <span className="text-zinc-700 normal-case">
+                    {holeCards.length > 0 ? '(тапни чтобы исправить)' : '(тапни чтобы ввести вручную)'}
+                  </span>
+                </p>
+                <div className="flex gap-2">
+                  {[0, 1].map((i) => {
+                    const auto = holeCards[i] ?? null;
+                    const manual = manualHole[i] ?? null;
+                    const display = auto ?? manual;
+                    return (
+                      <CardPicker
+                        key={i}
+                        selectedCard={display ?? undefined}
+                        disabledCards={[...holeCards, ...boardCards].filter(x => x !== display)}
+                        onSelect={(card) => card && handleHoleOverride(i, card)}
+                        trigger={
+                          display ? (
                             <button className="w-10 h-14 bg-zinc-100 rounded flex flex-col items-center justify-center border border-zinc-300 shadow hover:ring-2 hover:ring-blue-500 transition-shadow">
-                              <span className={cn('text-sm font-black leading-none', suitCls(c.suit))}>{rankLabel(c.rank)}</span>
-                              <span className={cn('text-sm leading-none', suitCls(c.suit))}>{suitSym(c.suit)}</span>
+                              <span className={cn('text-sm font-black leading-none', suitCls(display.suit))}>{rankLabel(display.rank)}</span>
+                              <span className={cn('text-sm leading-none', suitCls(display.suit))}>{suitSym(display.suit)}</span>
                             </button>
-                          }
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {boardCards.length > 0 && (
-                  <div>
-                    <p className="text-zinc-600 text-xs uppercase tracking-widest mb-1.5">Борд</p>
-                    <div className="flex gap-1 flex-wrap">
-                      {boardCards.map((c, i) => (
-                        <div key={i} className="w-9 h-12 bg-zinc-100 rounded flex flex-col items-center justify-center border border-zinc-300 shadow">
-                          <span className={cn('text-xs font-black leading-none', suitCls(c.suit))}>{rankLabel(c.rank)}</span>
-                          <span className={cn('text-xs leading-none', suitCls(c.suit))}>{suitSym(c.suit)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                          ) : (
+                            <button className="w-10 h-14 bg-zinc-800 rounded flex flex-col items-center justify-center border-2 border-dashed border-zinc-600 hover:border-blue-500 transition-colors text-zinc-500 hover:text-blue-400 text-lg">
+                              +
+                            </button>
+                          )
+                        }
+                      />
+                    );
+                  })}
+                </div>
               </div>
-            )}
+              {boardCards.length > 0 && (
+                <div>
+                  <p className="text-zinc-600 text-xs uppercase tracking-widest mb-1.5">Борд</p>
+                  <div className="flex gap-1 flex-wrap">
+                    {boardCards.map((c, i) => (
+                      <div key={i} className="w-9 h-12 bg-zinc-100 rounded flex flex-col items-center justify-center border border-zinc-300 shadow">
+                        <span className={cn('text-xs font-black leading-none', suitCls(c.suit))}>{rankLabel(c.rank)}</span>
+                        <span className={cn('text-xs leading-none', suitCls(c.suit))}>{suitSym(c.suit)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Waiting state */}
             {!advice && !analyzing && (

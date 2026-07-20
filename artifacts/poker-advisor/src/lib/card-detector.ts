@@ -469,14 +469,16 @@ export function autoDetectCards(
     0.10,
   );
 
-  // Hole cards: adaptive threshold search — retry with progressively lower thresholds
-  // until we find exactly 2 zones. Wider start (0.40) catches cards higher on the table.
+  // Hole cards: adaptive threshold search — retry with progressively lower thresholds.
+  // Keep the BEST result seen (most zones). Stop early when 2 found.
   const holeY0 = Math.round(0.40 * shTable);
   let holeResult = findCardsInBandPx(holeY0, sh, 2, 0.10);
 
-  for (const retryThresh of [0.07, 0.05, 0.03]) {
+  for (const retryThresh of [0.07, 0.05, 0.04]) {
     if (holeResult.zones.length >= 2) break;
-    holeResult = findCardsInBandPx(holeY0, sh, 2, retryThresh);
+    const retry = findCardsInBandPx(holeY0, sh, 2, retryThresh);
+    // Only replace if the new attempt found MORE zones (never downgrade)
+    if (retry.zones.length > holeResult.zones.length) holeResult = retry;
   }
 
   // If exactly 1 zone found after all retries, attempt to split at colScore valley
