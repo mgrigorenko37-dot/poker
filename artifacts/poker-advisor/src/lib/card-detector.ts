@@ -454,14 +454,14 @@ export function autoDetectCards(
     const leftMean  = leftSum  / Math.max(1, minX - run.x0);
     const rightMean = rightSum / Math.max(1, run.x1 - minX - 1);
 
-    // Accept split only if valley is at least 30% lower than both sides
-    if (minScore < leftMean * 0.70 && minScore < rightMean * 0.70) {
+    // Accept split if valley is at least 15% lower than both sides (lenient)
+    if (minScore < leftMean * 0.85 && minScore < rightMean * 0.85) {
       return [{ x0: run.x0, x1: minX }, { x0: minX + 1, x1: run.x1 }];
     }
     return [run];
   }
 
-  // Board cards: search middle of the TABLE (lower thresh = 0.10 for Pokerist's smaller card thumbnails)
+  // Board cards: search middle of the TABLE (lower thresh for smaller card thumbnails)
   const boardResult = findCardsInBandPx(
     Math.round(0.22 * shTable),
     Math.round(0.70 * shTable),
@@ -469,40 +469,58 @@ export function autoDetectCards(
     0.10,
   );
 
-  // Hole cards: search from mid-table to canvas bottom (lower thresh for small thumbnails)
-  let holeResult = findCardsInBandPx(
-    Math.round(0.50 * shTable),
-    sh,
-    2,
-    0.10,
-  );
+  // Hole cards: adaptive threshold search — retry with progressively lower thresholds
+  // until we find exactly 2 zones. Wider start (0.40) catches cards higher on the table.
+  const holeY0 = Math.round(0.40 * shTable);
+  let holeResult = findCardsInBandPx(holeY0, sh, 2, 0.10);
 
-  // If exactly 1 wide zone found, attempt to split it into 2 (adjacent cards merged by bright gap)
+  for (const retryThresh of [0.07, 0.05, 0.03]) {
+    if (holeResult.zones.length >= 2) break;
+    holeResult = findCardsInBandPx(holeY0, sh, 2, retryThresh);
+  }
+
+  // If exactly 1 zone found after all retries, attempt to split at colScore valley
   if (holeResult.zones.length === 1) {
     const r = holeResult.zones[0];
-    const runRaw = { x0: Math.round((r.cx - r.w / 2 - tx) * scale), x1: Math.round((r.cx + r.w / 2 - tx) * scale) };
-    const y0 = Math.round(0.50 * shTable);
-    const y1 = sh;
-    const split = trySplitHoleRun(runRaw, holeResult.colScore, y0, y1);
+    const runRaw = {
+      x0: Math.max(0,    Math.round((r.cx - r.w / 2 - tx) * scale)),
+      x1: Math.min(sw-1, Math.round((r.cx + r.w / 2 - tx) * scale)),
+    };
+    const split = trySplitHoleRun(runRaw, holeResult.colScore, holeY0, sh);
     if (split.length === 2) {
-      // Rebuild the two zones from the split runs
       const makeZoneFromRun = (rx: { x0: number; x1: number }): CardZone => {
         const cx_s = (rx.x0 + rx.x1) / 2;
         const cw_s = rx.x1 - rx.x0;
         return { cx: tx + cx_s / scale, cy: r.cy, w: cw_s / scale, h: r.h };
       };
-      holeResult = {
-        zones: split.map(makeZoneFromRun),
-        totalRuns: holeResult.totalRuns,
-        colScore:  holeResult.colScore,
-      };
+      holeResult = { zones: split.map(makeZoneFromRun), totalRuns: holeResult.totalRuns, colScore: holeResult.colScore };
     }
   }
 
-  const holeZones: [CardZone, CardZone] | null =
-    holeResult.zones.length === 2
-      ? [holeResult.zones[0], holeResult.zones[1]]
-      : null;
+  let holeZones: [CardZone, CardZone] | null = null;
+
+  if (holeResult.zones.length >= 2) {
+    holeZones = [holeResult.zones[0], holeResult.zones[1]];
+  } else if (holeResult.zones.length === 1) {
+    // Found exactly 1 hole card zone. Estimate the partner card position.
+    // Hole cards in every poker client are always adjacent, ~1.2 card-widths apart (center-to-center).
+    // Determine direction: if found card is LEFT of canvas center → partner is to the right, else left.
+    const found = holeResult.zones[0];
+    const canvasMidX = tx + tw / 2;
+    const offsetX = Math.max(found.w * 1.1, tw * 0.06); // at least 6% of table width
+    const partnerCx = found.cx < canvasMidX
+      ? found.cx + offsetX   // found is on the left → partner is right
+      : found.cx - offsetX;  // found is on the right → partner is left
+    const partner: CardZone = {
+      cx: Math.max(tx, Math.min(tx + tw, partnerCx)),
+      cy: found.cy,
+      w:  found.w,
+      h:  found.h,
+    };
+    // Sort left-to-right so slot 0 = left card, slot 1 = right card
+    const pair = [found, partner].sort((a, b) => a.cx - b.cx) as [CardZone, CardZone];
+    holeZones = pair;
+  }
 
   return {
     holeZones,
