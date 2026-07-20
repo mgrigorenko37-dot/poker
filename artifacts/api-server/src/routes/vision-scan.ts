@@ -125,15 +125,18 @@ router.post("/vision/scan", async (req, res) => {
     } catch (err: any) {
       clearTimeout(timer);
       const status = err?.status ?? 0;
+      // Extract the real Google error message from the SDK error
+      const errBody: string = err?.message ?? String(err);
       const isRetryable = status === 503 || status === 429 || err?.name === "AbortError";
       if (isRetryable && attempt < SDK_MODELS.length - 1) {
-        logger.warn({ model: modelName, status }, "vision/scan: retrying with fallback model");
+        logger.warn({ model: modelName, status, errBody }, "vision/scan: retrying with fallback model");
         const delay = status === 429 ? 1500 : 300;
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
-      logger.error({ model: modelName, status }, "vision/scan: all SDK models failed");
-      res.status(503).json({ ok: false, error: "Vision API unavailable — try again in a moment", geminiStatus: status });
+      logger.error({ model: modelName, status, errBody }, "vision/scan: all SDK models failed");
+      // Return the actual Google error so it shows up in the UI
+      res.status(503).json({ ok: false, error: `Gemini error ${status}: ${errBody.slice(0, 300)}`, geminiStatus: status });
       return;
     }
   }
