@@ -346,16 +346,18 @@ export function autoDetectCards(
 
   // ── Column projection in an absolute-pixel band ──────────────────────────
   // y0px / y1px are rows in the SCALED canvas (not fractions).
-  // Returns { zones, totalRuns } — totalRuns is count before the maxCards cap
+  // thresh: min column score to count as "bright card column" (default 0.15)
+  // Returns { zones, totalRuns, colScore } — totalRuns is count before the maxCards cap
   function findCardsInBandPx(
     y0px: number,
     y1px: number,
     maxCards: number,
-  ): { zones: CardZone[]; totalRuns: number } {
+    thresh = 0.15,
+  ): { zones: CardZone[]; totalRuns: number; colScore: Float32Array } {
     const y0 = Math.max(0, y0px);
     const y1 = Math.min(sh - 1, y1px);
     const bh = y1 - y0;
-    if (bh < 4) return { zones: [], totalRuns: 0 };
+    if (bh < 4) return { zones: [], totalRuns: 0, colScore: new Float32Array(sw) };
 
     // Column brightness score: fraction of bright pixels in this band column
     const colScore = new Float32Array(sw);
@@ -363,26 +365,22 @@ export function autoDetectCards(
       let bright = 0;
       for (let y = y0; y < y1; y++) {
         const i = (y * sw + x) * 4;
-        // "Card face" = light colored: not strongly green (felt), not dark
         const r = data[i], g = data[i + 1], b = data[i + 2];
         const lum = r * 0.299 + g * 0.587 + b * 0.114;
-        // Lowered from 175→145 to catch off-white/cream card faces
         const isCardPixel = lum > 145 && !(g > r * 1.10 && g > b * 1.05);
         if (isCardPixel) bright++;
       }
       colScore[x] = bright / bh;
     }
 
-    // Find connected runs of columns where score > threshold
-    const THRESH = 0.18; // lowered from 0.25
     const MIN_CARD_W = Math.round(sw * 0.03);
-    const MAX_CARD_W = Math.round(sw * 0.26); // raised from 0.20
+    const MAX_CARD_W = Math.round(sw * 0.26);
 
     const runs: { x0: number; x1: number }[] = [];
     let inRun = false, runStart = 0;
     for (let x = 0; x < sw; x++) {
-      if (!inRun && colScore[x] >= THRESH) { inRun = true; runStart = x; }
-      else if (inRun && (colScore[x] < THRESH || x === sw - 1)) {
+      if (!inRun && colScore[x] >= thresh) { inRun = true; runStart = x; }
+      else if (inRun && (colScore[x] < thresh || x === sw - 1)) {
         const runW = x - runStart;
         if (runW >= MIN_CARD_W && runW <= MAX_CARD_W) {
           runs.push({ x0: runStart, x1: x });
@@ -391,9 +389,9 @@ export function autoDetectCards(
       }
     }
 
-    if (runs.length === 0) return { zones: [], totalRuns: 0 };
+    if (runs.length === 0) return { zones: [], totalRuns: 0, colScore };
 
-    const totalRuns = runs.length; // before cap
+    const totalRuns = runs.length;
 
     // Sort by score sum (brightest first) and take top maxCards
     const scored = runs.map(r => {
@@ -402,14 +400,11 @@ export function autoDetectCards(
       return { ...r, sum };
     }).sort((a, b) => b.sum - a.sum).slice(0, maxCards);
 
-    // Re-sort left-to-right
     scored.sort((a, b) => a.x0 - b.x0);
 
-    const zones = scored.map(r => {
+    const makeZone = (r: { x0: number; x1: number }): CardZone => {
       const cx_s = (r.x0 + r.x1) / 2;
       const cw_s = r.x1 - r.x0;
-
-      // Find the vertical centroid of bright pixels in this column run
       let ySum = 0, yCount = 0;
       let yMin = y1, yMax = y0;
       for (let x = r.x0; x < r.x1; x++) {
@@ -417,8 +412,7 @@ export function autoDetectCards(
           const i = (y * sw + x) * 4;
           const r2 = data[i], g = data[i + 1], b = data[i + 2];
           const lum = r2 * 0.299 + g * 0.587 + b * 0.114;
-          const isCardPixel = lum > 145 && !(g > r2 * 1.10 && g > b * 1.05);
-          if (isCardPixel) {
+          if (lum > 145 && !(g > r2 * 1.10 && g > b * 1.05)) {
             ySum += y; yCount++;
             if (y < yMin) yMin = y;
             if (y > yMax) yMax = y;
@@ -427,33 +421,83 @@ export function autoDetectCards(
       }
       const cy_s = yCount > 0 ? ySum / yCount : (y0 + y1) / 2;
       const ch_s = yCount > 0 ? Math.max(yMax - yMin + 2, cw_s * 1.3) : cw_s * 1.4;
+      return { cx: tx + cx_s / scale, cy: ty + cy_s / scale, w: cw_s / scale, h: ch_s / scale };
+    };
 
-      return {
-        cx: tx + cx_s / scale,
-        cy: ty + cy_s / scale,
-        w:  cw_s / scale,
-        h:  ch_s / scale,
-      } as CardZone;
-    });
-
-    return { zones, totalRuns };
+    const zones = scored.map(makeZone);
+    return { zones, totalRuns, colScore };
   }
 
-  // Board cards: search middle of the TABLE only (fractions of shTable)
+  // Helper: when 1 wide zone found for hole cards, try to split at the colScore valley
+  function trySplitHoleRun(
+    run: { x0: number; x1: number },
+    colScore: Float32Array,
+    y0: number, y1: number,
+  ): { x0: number; x1: number }[] {
+    const runW = run.x1 - run.x0;
+    const minSingleW = Math.round(sw * 0.03);
+    // Only attempt split if run is at least 1.5× a single card width
+    if (runW < minSingleW * 1.5) return [run];
+
+    // Find the colScore valley in the middle 60% of the run
+    const searchStart = Math.round(run.x0 + runW * 0.20);
+    const searchEnd   = Math.round(run.x0 + runW * 0.80);
+    let minScore = Infinity, minX = searchStart;
+    for (let x = searchStart; x < searchEnd; x++) {
+      if (colScore[x] < minScore) { minScore = colScore[x]; minX = x; }
+    }
+
+    // Compute mean score of left and right halves
+    let leftSum = 0, rightSum = 0;
+    for (let x = run.x0; x < minX; x++) leftSum += colScore[x];
+    for (let x = minX + 1; x < run.x1; x++) rightSum += colScore[x];
+    const leftMean  = leftSum  / Math.max(1, minX - run.x0);
+    const rightMean = rightSum / Math.max(1, run.x1 - minX - 1);
+
+    // Accept split only if valley is at least 30% lower than both sides
+    if (minScore < leftMean * 0.70 && minScore < rightMean * 0.70) {
+      return [{ x0: run.x0, x1: minX }, { x0: minX + 1, x1: run.x1 }];
+    }
+    return [run];
+  }
+
+  // Board cards: search middle of the TABLE (lower thresh = 0.10 for Pokerist's smaller card thumbnails)
   const boardResult = findCardsInBandPx(
     Math.round(0.22 * shTable),
     Math.round(0.70 * shTable),
     5,
+    0.10,
   );
 
-  // Hole cards: search from mid-table ALL THE WAY to canvas bottom.
-  // This handles both standard layouts (cards on felt) and Pokerist-style
-  // (cards in the wooden border below the green oval).
-  const holeResult = findCardsInBandPx(
+  // Hole cards: search from mid-table to canvas bottom (lower thresh for small thumbnails)
+  let holeResult = findCardsInBandPx(
     Math.round(0.50 * shTable),
-    sh, // extends to canvas bottom
+    sh,
     2,
+    0.10,
   );
+
+  // If exactly 1 wide zone found, attempt to split it into 2 (adjacent cards merged by bright gap)
+  if (holeResult.zones.length === 1) {
+    const r = holeResult.zones[0];
+    const runRaw = { x0: Math.round((r.cx - r.w / 2 - tx) * scale), x1: Math.round((r.cx + r.w / 2 - tx) * scale) };
+    const y0 = Math.round(0.50 * shTable);
+    const y1 = sh;
+    const split = trySplitHoleRun(runRaw, holeResult.colScore, y0, y1);
+    if (split.length === 2) {
+      // Rebuild the two zones from the split runs
+      const makeZoneFromRun = (rx: { x0: number; x1: number }): CardZone => {
+        const cx_s = (rx.x0 + rx.x1) / 2;
+        const cw_s = rx.x1 - rx.x0;
+        return { cx: tx + cx_s / scale, cy: r.cy, w: cw_s / scale, h: r.h };
+      };
+      holeResult = {
+        zones: split.map(makeZoneFromRun),
+        totalRuns: holeResult.totalRuns,
+        colScore:  holeResult.colScore,
+      };
+    }
+  }
 
   const holeZones: [CardZone, CardZone] | null =
     holeResult.zones.length === 2
