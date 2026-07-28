@@ -12,7 +12,6 @@ A poker advisor web app that analyzes hands, shows preflop charts, tracks histor
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string (auto-provisioned)
-- Required env: `OPENROUTER_API_KEY` — needed for the camera-based card scanner (`POST /api/scan-cards`, `CameraScan.tsx`), which calls `google/gemma-4-31b-it:free` via OpenRouter. Not yet set — this feature (photo of table → AI reads cards) is inactive without it. The screen-scan auto-pilot (`ScreenScan.tsx`) does NOT need this — it reads cards locally via Tesseract OCR.
 - Required secret: `TELEGRAM_BOT_TOKEN` — set. Powers automatic push of fold/call/raise decisions to the user's Telegram while `ScreenScan` (🖥️ Экран tab) is running.
 - Telegram chat_id is auto-discovered (not a secret) — user sends `/start` to their bot once, then clicks "привязать" in the app's Telegram card, which calls `POST /api/telegram/link` (Telegram `getUpdates`) and persists the chat_id to `artifacts/api-server/data/telegram-config.json`. Re-link if the bot is recreated with a new token.
 

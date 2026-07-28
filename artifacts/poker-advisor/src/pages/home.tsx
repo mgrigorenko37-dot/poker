@@ -2,20 +2,16 @@ import React, { useState } from 'react';
 import { HandAnalyzer } from '@/components/HandAnalyzer';
 import { PreflopChart } from '@/components/PreflopChart';
 import { HandHistory } from '@/components/HandHistory';
-import { CameraScan } from '@/components/CameraScan';
 import { ScreenScan } from '@/components/ScreenScan';
-import { ScreenScanLocal } from '@/components/ScreenScanLocal';
 import { LiveView } from '@/components/LiveView';
 import { cn } from '@/lib/utils';
 import { useThemeProvider } from '@/hooks/use-theme';
 
-type Tab = 'analyzer' | 'screen' | 'camera' | 'live' | 'chart' | 'history';
-type ScreenMode = 'ai' | 'local';
+type Tab = 'analyzer' | 'screen' | 'live' | 'chart' | 'history';
 
 export default function Home() {
   useThemeProvider();
-  const [activeTab, setActiveTab]     = useState<Tab>('analyzer');
-  const [screenMode, setScreenMode]   = useState<ScreenMode>('local');
+  const [activeTab, setActiveTab] = useState<Tab>('analyzer');
 
   return (
     <div className="min-h-[100dvh] bg-[#0d1117] text-zinc-100 flex flex-col font-mono selection:bg-emerald-900/50">
@@ -37,7 +33,6 @@ export default function Home() {
               { id: 'analyzer', label: 'Analyzer' },
               { id: 'screen',   label: '🖥️ Экран' },
               { id: 'live',     label: '📱 Эфир' },
-              { id: 'camera',   label: '📷 Камера' },
               { id: 'chart',    label: 'Preflop' },
               { id: 'history',  label: 'History' },
             ] as { id: Tab; label: string }[]).map(tab => (
@@ -61,38 +56,8 @@ export default function Home() {
       {/* MAIN */}
       <main className="flex-1 flex flex-col">
         {activeTab === 'analyzer' && <div className="py-8"><HandAnalyzer /></div>}
-        {activeTab === 'screen' && (
-          <div className="flex flex-col h-full">
-            {/* Mode toggle */}
-            <div className="flex gap-1 p-2 border-b border-zinc-800 bg-zinc-950">
-              <button
-                onClick={() => setScreenMode('local')}
-                className={cn(
-                  'flex-1 py-1.5 rounded-md text-xs font-medium transition-all',
-                  screenMode === 'local'
-                    ? 'bg-blue-700 text-white'
-                    : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
-                )}
-              >
-                🔬 Локальный (без AI)
-              </button>
-              <button
-                onClick={() => setScreenMode('ai')}
-                className={cn(
-                  'flex-1 py-1.5 rounded-md text-xs font-medium transition-all',
-                  screenMode === 'ai'
-                    ? 'bg-emerald-700 text-white'
-                    : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
-                )}
-              >
-                ✨ AI (Gemini)
-              </button>
-            </div>
-            {screenMode === 'local' ? <ScreenScanLocal /> : <ScreenScan />}
-          </div>
-        )}
+        {activeTab === 'screen'   && <ScreenScan />}
         {activeTab === 'live'     && <LiveView />}
-        {activeTab === 'camera'   && <CameraScan />}
         {activeTab === 'chart'    && <div className="py-8"><PreflopChart /></div>}
         {activeTab === 'history'  && <div className="py-8"><HandHistory /></div>}
       </main>
