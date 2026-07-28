@@ -247,13 +247,13 @@ export function ScreenScan() {
       // Successful detection — reset fold counter
       noCardFrames.current = 0;
 
-      // ── 2-frame stability: same hole cards must appear twice in a row ────
-      // Prevents a single wrong-rank detection from going to Telegram.
-      // On first deal: frame 1 sets key, frame 2 confirms → sends (~300 ms delay).
-      // On street change: board grows but hole key stays → passes immediately.
-      const currentHoleKey = [...yoloResult.holeCards].sort().join(',');
-      if (currentHoleKey !== lastHoleKeyRef.current) {
-        lastHoleKeyRef.current = currentHoleKey;
+      // ── 2-frame stability: same hole+board must appear twice in a row ─────
+      // Prevents single-frame misreads (wrong rank or suit) from going to
+      // Telegram. Applies to both preflop and new street events.
+      // Frame 1: new key → store → skip.  Frame 2: same key → send.
+      const currentKey = [...yoloResult.holeCards, ...yoloResult.boardCards].sort().join(',');
+      if (currentKey !== lastHoleKeyRef.current) {
+        lastHoleKeyRef.current = currentKey;
         return; // wait for confirmation on next frame
       }
 
