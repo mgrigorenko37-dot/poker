@@ -143,9 +143,17 @@ const state: HandStateData = {
 
 function boardToStreet(boardCount: number): Street {
   if (boardCount === 0) return 'preflop';
-  if (boardCount <= 3) return 'flop';
+  if (boardCount === 3) return 'flop';
   if (boardCount === 4) return 'turn';
-  return 'river';
+  return 'river'; // 5+
+}
+
+/**
+ * Valid board card counts in Texas Hold'em: 0 (preflop), 3 (flop), 4 (turn), 5 (river).
+ * Counts of 1 or 2 are YOLO mid-animation mis-detections and must be rejected.
+ */
+export function isValidBoardCount(n: number): boolean {
+  return n === 0 || n === 3 || n === 4 || n === 5;
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────

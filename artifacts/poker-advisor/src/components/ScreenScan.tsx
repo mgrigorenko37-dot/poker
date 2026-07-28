@@ -263,6 +263,12 @@ export function ScreenScan() {
       }
 
       // ── Step 2: GTO analysis on server (cards already known) ────────────
+      // Compute minimum detection confidence across all detected cards — passed
+      // to the server so it can gate Telegram behind a higher confidence bar.
+      const minConfidence = yoloResult.allDetections.length > 0
+        ? Math.min(...yoloResult.allDetections.map(d => d.confidence))
+        : 0;
+
       const res = await fetch('/api/vision/scan-cards', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -271,8 +277,9 @@ export function ScreenScan() {
           boardCards: yoloResult.boardCards,
           position,
           players,
-          potSize:   potSize   ?? undefined,
-          betToCall: betToCall ?? undefined,
+          potSize:       potSize   ?? undefined,
+          betToCall:     betToCall ?? undefined,
+          minConfidence,
         }),
       });
 

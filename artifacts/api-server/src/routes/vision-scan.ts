@@ -15,7 +15,7 @@ import { buildTelegramText } from "../lib/telegram-format";
 import { logger } from "../lib/logger";
 import { parseCard, runMonteCarloSim } from "../lib/poker";
 import { getFullAdvice } from "../lib/poker-gto";
-import { updateHandState, resetHandState, getHandHistory, type TelegramTrigger } from "../lib/hand-state";
+import { updateHandState, resetHandState, getHandHistory, isValidBoardCount, type TelegramTrigger } from "../lib/hand-state";
 import { narrowVillainRange } from "../lib/range-narrower";
 import { getOpponentSummary } from "../lib/opponent-profile";
 import { getSPRAdvice } from "../lib/spr-advice";
@@ -50,7 +50,14 @@ router.post("/vision/scan-cards", (req, res) => {
     players = 4,
     position = "BTN",
     lastAction = null,
+    minConfidence = 1.0,   // minimum YOLO detection confidence across all detected cards
   } = req.body;
+
+  // ── Confidence gate ───────────────────────────────────────────────────────
+  // Below this threshold the model is too unsure — run analysis for the UI but
+  // suppress Telegram so shaky detections (rank confusion, partial occlusion)
+  // don't produce noisy push notifications.
+  const TELEGRAM_MIN_CONF = 0.40;
 
   if (!Array.isArray(holeCards) || holeCards.length !== 2) {
     res.status(400).json({ ok: false, error: "holeCards must be array of 2 strings" });
@@ -58,7 +65,30 @@ router.post("/vision/scan-cards", (req, res) => {
   }
 
   const holeStrings = holeCards as string[];
-  const boardStrings = boardCards as string[];
+  const boardStrings = (boardCards as string[]);
+
+  // ── Board count validation ────────────────────────────────────────────────
+  // Texas Hold'em only ever has 0 (preflop), 3 (flop), 4 (turn), or 5 (river)
+  // community cards. A count of 1 or 2 means YOLO caught the animation mid-deal
+  // and the detection is unreliable — reject silently to avoid firing Telegram
+  // with wrong board state.
+  if (!isValidBoardCount(boardStrings.length)) {
+    logger.warn({ boardCount: boardStrings.length }, "scan-cards: invalid board count, ignoring");
+    res.json({ ok: false, error: `invalid board count ${boardStrings.length} (expected 0,3,4,5)` });
+    return;
+  }
+
+  // ── Hole ∩ board duplicate check ─────────────────────────────────────────
+  // A card cannot appear in both hero's hand and the community cards.
+  // If YOLO assigned the same card to both zones the detection is corrupt.
+  const holeLower  = new Set(holeStrings.map(s => s.toLowerCase()));
+  const boardLower = boardStrings.map(s => s.toLowerCase());
+  const hasDup     = boardLower.some(s => holeLower.has(s));
+  if (hasDup) {
+    logger.warn({ holeStrings, boardStrings }, "scan-cards: duplicate card in hole+board, ignoring");
+    res.json({ ok: false, error: "duplicate card in hole and board" });
+    return;
+  }
 
   let hole;
   try {
@@ -121,7 +151,13 @@ router.post("/vision/scan-cards", (req, res) => {
   const trigger = updateHandState(holeStrings, validBoardStrings, advice.displayText, finalPot, finalBet, lastAction);
   const handHistory = getHandHistory();
   const opponentProfile = getOpponentSummary();
-  if (trigger) fireTelegram({ ...output, handHistory, opponentProfile }, trigger);
+  if (trigger) {
+    if (minConfidence >= TELEGRAM_MIN_CONF) {
+      fireTelegram({ ...output, handHistory, opponentProfile }, trigger);
+    } else {
+      logger.warn({ minConfidence, trigger: trigger.reason }, "scan-cards: Telegram suppressed (low confidence)");
+    }
+  }
 
   logger.info(
     { action: advice.displayText, equity: Math.round(advice.equity * 100), hole: holeStrings, board: validBoardStrings },
