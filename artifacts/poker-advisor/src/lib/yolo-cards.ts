@@ -220,11 +220,29 @@ function nms(detections: Detection[]): Detection[] {
 }
 
 // ── Layout heuristic ───────────────────────────────────────────────────────────
-// Hole cards are at the bottom of the frame (hero's hand), board cards in the middle.
-// Sort by cy descending: the 2 with highest y = hole cards, rest = board.
-function assignCards(detections: Detection[]): { holeCards: string[]; boardCards: string[] } {
-  if (detections.length < 2) return { holeCards: [], boardCards: [] };
+// Hole cards sit at the BOTTOM of the cropped table frame; board cards are in
+// the middle. After a fold the hole cards disappear, leaving only board cards.
+//
+// Old approach (blindly take bottom-2) broke on fold: board cards that happen
+// to be lowest got misassigned as hole cards.
+//
+// New approach — gap-based:
+//   1. Sort all detections by cy descending (bottom of frame first).
+//   2. Look for a significant vertical gap between position [1] and [2].
+//      A gap ≥ 15 % of the frame means there's a clear separation between
+//      two groups (hole cards below, board cards above).
+//   3. The bottom group must have cy ≥ 0.50 (actually in the lower half of
+//      the frame) — prevents assigning middle-table board cards as hole cards.
+//   4. With only 2 cards visible: hole cards only if cy ≥ 0.50.
+//   5. No valid hole assignment → return empty holeCards (fold / between hands).
+//
+// Constants are intentionally conservative so a mis-deal false-positive is
+// much less likely than a missed detection — better to under-detect than to
+// ghost the wrong hand into Telegram.
+const MIN_HOLE_GAP = 0.15;   // minimum cy gap to separate hole from board
+const MIN_HOLE_CY  = 0.50;   // hole cards must be in the bottom half of the crop
 
+function assignCards(detections: Detection[]): { holeCards: string[]; boardCards: string[] } {
   // Deduplicate: keep highest-confidence detection per card label
   const byLabel = new Map<string, Detection>();
   for (const d of detections) {
@@ -233,24 +251,53 @@ function assignCards(detections: Detection[]): { holeCards: string[]; boardCards
   }
   const unique = [...byLabel.values()];
 
-  // Sort by cy descending (bottom first)
+  if (unique.length < 2) return { holeCards: [], boardCards: [] };
+
+  // Sort by cy descending (bottom of frame first, i.e. highest cy = index 0)
   unique.sort((a, b) => b.cy - a.cy);
 
-  // Bottom 2 = hole cards, rest sorted by cx = board cards
-  const holeDetections = unique.slice(0, 2);
-  const boardDetections = unique.slice(2, 7).sort((a, b) => a.cx - b.cx);
+  if (unique.length === 2) {
+    // Only 2 cards: treat as hole cards only when they're in the bottom half
+    if (unique[0].cy >= MIN_HOLE_CY) {
+      return { holeCards: unique.map(d => d.label), boardCards: [] };
+    }
+    // Too high up → board-only, no hole cards (folded)
+    return { holeCards: [], boardCards: unique.sort((a, b) => a.cx - b.cx).map(d => d.label) };
+  }
 
-  return {
-    holeCards: holeDetections.map(d => d.label),
-    boardCards: boardDetections.map(d => d.label),
-  };
+  // 3+ cards: check for a gap between position [1] (2nd from bottom) and [2]
+  const gap = unique[1].cy - unique[2].cy;
+  const avgHoleCy = (unique[0].cy + unique[1].cy) / 2;
+
+  if (gap >= MIN_HOLE_GAP && avgHoleCy >= MIN_HOLE_CY) {
+    // Clear separation: bottom 2 = hole cards, rest = board (sorted left→right)
+    return {
+      holeCards: [unique[0].label, unique[1].label],
+      boardCards: unique.slice(2, 7).sort((a, b) => a.cx - b.cx).map(d => d.label),
+    };
+  }
+
+  // No clear gap → no hole cards visible (player folded or between hands)
+  return { holeCards: [], boardCards: [] };
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
+export interface YoloCardResult {
+  holeCards: string[];          // 2 card strings (bottom of frame = hero)
+  boardCards: string[];         // 0-5 card strings (middle of frame)
+  allDetections: Detection[];   // for debug overlay
+  folded: boolean;              // true when cards were found but no hole cards (fold detected)
+}
+
 /**
  * Run card detection on a canvas element.
- * Returns null if fewer than 2 cards are detected (not enough for a hand).
+ *
+ * Returns:
+ *   - { holeCards: [..2], boardCards: [...], folded: false } — normal hand
+ *   - { holeCards: [], boardCards: [...], folded: true }     — fold detected
+ *     (board cards still present but no hole cards in frame)
+ *   - null — nothing useful found (< 2 cards total, model not warmed up yet, etc.)
  */
 export async function detectCards(canvas: HTMLCanvasElement): Promise<YoloCardResult | null> {
   const sess = await loadYoloModel();
@@ -265,12 +312,17 @@ export async function detectCards(canvas: HTMLCanvasElement): Promise<YoloCardRe
   const raw = parseOutput(output, padX, padY, scaledW, scaledH);
   const detections = nms(raw);
 
+  // Need at least 2 detections to say anything meaningful
   if (detections.length < 2) return null;
 
   const { holeCards, boardCards } = assignCards(detections);
-  if (holeCards.length < 2) return null;
 
-  return { holeCards, boardCards, allDetections: detections };
+  if (holeCards.length < 2) {
+    // Cards are on screen but none assigned to hole zone → fold / between hands
+    return { holeCards: [], boardCards, allDetections: detections, folded: true };
+  }
+
+  return { holeCards, boardCards, allDetections: detections, folded: false };
 }
 
 /**

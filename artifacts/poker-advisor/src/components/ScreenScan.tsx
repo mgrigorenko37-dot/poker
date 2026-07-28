@@ -151,6 +151,7 @@ export function ScreenScan() {
   const lastScanTimeRef = useRef<number>(0);
   const hasCardsRef     = useRef(false);     // adaptive diff threshold
   const busyRef         = useRef(0);         // concurrent scan call counter
+  const noCardFrames    = useRef(0);         // consecutive frames without hole cards
 
   // Manual card overrides (user tap-to-correct)
   const overrides   = useRef<Map<string, string>>(new Map()); // slot → card string
@@ -163,6 +164,7 @@ export function ScreenScan() {
     watchPxRef.current = null;
     busyRef.current = 0;
     hasCardsRef.current = false;
+    noCardFrames.current = 0;
     lastScanTimeRef.current = 0;
     overrides.current.clear();
     setPhase('idle');
@@ -211,7 +213,36 @@ export function ScreenScan() {
     try {
       // ── Step 1: local YOLO card detection (~50-100 ms) ──────────────────
       const yoloResult = await detectCards(yoloCanvas);
-      if (!yoloResult || yoloResult.holeCards.length < 2) return; // no hand visible
+
+      // ── Fold detection ───────────────────────────────────────────────────
+      // If YOLO found cards but no hole cards → player may have folded.
+      // Require 3 consecutive such frames (~1 s) before declaring fold to
+      // avoid triggering on momentary YOLO misses.
+      if (!yoloResult || yoloResult.holeCards.length < 2) {
+        if (yoloResult?.folded || !yoloResult) {
+          noCardFrames.current++;
+        } else {
+          noCardFrames.current = 0;
+        }
+
+        if (hasCardsRef.current && noCardFrames.current >= 3) {
+          // Confirmed fold: had cards, now they're gone
+          hasCardsRef.current = false;
+          noCardFrames.current = 0;
+          overrides.current.clear();
+          setHoleCards([]);
+          setBoardCards([]);
+          setHoleStrs([]);
+          setBoardStrs([]);
+          setResult(null);
+          // Notify server: triggers hand-state fold + Telegram "рука закончена"
+          fetch('/api/vision/fold', { method: 'POST' }).catch(() => {});
+        }
+        return;
+      }
+
+      // Successful detection — reset fold counter
+      noCardFrames.current = 0;
 
       // ── Step 2: GTO analysis on server (cards already known) ────────────
       const res = await fetch('/api/vision/scan-cards', {

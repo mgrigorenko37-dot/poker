@@ -130,6 +130,20 @@ router.post("/vision/scan-cards", (req, res) => {
   res.json(output);
 });
 
+// ── Fold signal ────────────────────────────────────────────────────────────────
+// Called by ScreenScan when YOLO sees cards on the table but no hole cards
+// for 3+ consecutive frames — meaning the hero folded or the hand ended.
+// Triggers the hand-state machine fold path (Telegram "рука закончена") then
+// resets state so the next hand starts clean.
+router.post("/vision/fold", (_req, res) => {
+  const trigger = updateHandState(null, [], "");
+  if (trigger?.reason === "fold" && isTelegramConfigured()) {
+    sendTelegramMessage("🔻 <b>Рука закончена</b>\nКарты убраны — фолд или шоудаун").catch(() => {});
+  }
+  resetHandState();
+  res.json({ ok: true });
+});
+
 // ── Reset state machine ────────────────────────────────────────────────────────
 // Called by ScreenScan when the session starts/stops so the state is clean.
 router.post("/vision/reset", (_req, res) => {
