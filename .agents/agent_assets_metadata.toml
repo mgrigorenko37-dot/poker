@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "Zm3tLIUu4pdlommdf1t-s"
+uri = "file://attached_assets/colab_export_onnx.ipynb"
+type = "unspecified"
+title = "Colab: YOLOv8 → ONNX export"
