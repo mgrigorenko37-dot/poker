@@ -23,7 +23,7 @@ ort.env.wasm.numThreads = 1;
 // ── Constants ──────────────────────────────────────────────────────────────────
 const MODEL_URL = `${import.meta.env.BASE_URL}models/playing_cards.onnx`;
 const INPUT_SIZE = 640;
-const CONF_THRESHOLD = 0.45;
+const CONF_THRESHOLD = 0.25;      // lowered: 0.45 was too strict for most poker room card designs
 const NMS_IOU_THRESHOLD = 0.45;
 const MAX_DETECTIONS = 7; // 2 hole + 5 board
 

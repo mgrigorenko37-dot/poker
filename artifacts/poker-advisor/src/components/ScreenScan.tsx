@@ -152,6 +152,7 @@ export function ScreenScan() {
   const hasCardsRef     = useRef(false);     // adaptive diff threshold
   const busyRef         = useRef(0);         // concurrent scan call counter
   const noCardFrames    = useRef(0);         // consecutive frames without hole cards
+  const lastHoleKeyRef  = useRef<string>(''); // previous frame's hole card key (for 2-frame stability)
 
   // Manual card overrides (user tap-to-correct)
   const overrides   = useRef<Map<string, string>>(new Map()); // slot → card string
@@ -165,6 +166,7 @@ export function ScreenScan() {
     busyRef.current = 0;
     hasCardsRef.current = false;
     noCardFrames.current = 0;
+    lastHoleKeyRef.current = '';
     lastScanTimeRef.current = 0;
     overrides.current.clear();
     setPhase('idle');
@@ -229,6 +231,7 @@ export function ScreenScan() {
           // Confirmed fold: had cards, now they're gone
           hasCardsRef.current = false;
           noCardFrames.current = 0;
+          lastHoleKeyRef.current = '';
           overrides.current.clear();
           setHoleCards([]);
           setBoardCards([]);
@@ -243,6 +246,16 @@ export function ScreenScan() {
 
       // Successful detection — reset fold counter
       noCardFrames.current = 0;
+
+      // ── 2-frame stability: same hole cards must appear twice in a row ────
+      // Prevents a single wrong-rank detection from going to Telegram.
+      // On first deal: frame 1 sets key, frame 2 confirms → sends (~300 ms delay).
+      // On street change: board grows but hole key stays → passes immediately.
+      const currentHoleKey = [...yoloResult.holeCards].sort().join(',');
+      if (currentHoleKey !== lastHoleKeyRef.current) {
+        lastHoleKeyRef.current = currentHoleKey;
+        return; // wait for confirmation on next frame
+      }
 
       // ── Step 2: GTO analysis on server (cards already known) ────────────
       const res = await fetch('/api/vision/scan-cards', {
@@ -334,10 +347,12 @@ export function ScreenScan() {
         const threshold = hasCardsRef.current ? 0.04 : 0.015;
         if (diff < threshold) return; // cosmetic change — skip
 
-        // Cooldown: min 300 ms between scans (YOLO is local, ~50-100ms per frame)
+        // Cooldown: 150 ms when waiting for first deal, 400 ms once hand is running
+        // (faster first detection; slower polling avoids noise during active hand)
         const now = Date.now();
         if (busyRef.current > 0) return;
-        if (now - lastScanTimeRef.current < 300) return;
+        const cooldown = hasCardsRef.current ? 400 : 150;
+        if (now - lastScanTimeRef.current < cooldown) return;
 
         // Significant change detected — scan NOW
         scanTickRef.current();
