@@ -8,3 +8,4 @@
 - [Poker Terminal auto money/seats](poker-terminal-auto-money-and-seats.md) — opt-in OCR for pot/bet and pixel-based seat/fold detection, separate from mandatory card calibration; manual edit disables auto
 - [Poker Terminal OCR debug panel](poker-terminal-ocr-debug-panel.md) — togglable "what OCR sees" thumbnails to tell calibration/capture mismatch apart from real recognition bugs
 - [Poker Terminal screen-share surface](poker-terminal-screen-share-mode.md) — sharing "entire screen" (not the game window) shrinks/misaligns the table in-frame, breaking % calibration
+- [Poker Terminal YOLOv8 ONNX integration](poker-terminal-yolo-onnx.md) — model source, class format, WASM setup, layout heuristic, scan-cards endpoint wiring

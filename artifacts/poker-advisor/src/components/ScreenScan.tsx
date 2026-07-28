@@ -1,14 +1,14 @@
 /**
- * ScreenScan — fully automatic poker screen analysis via Gemini Vision.
+ * ScreenScan — fully automatic poker screen analysis via YOLOv8-nano (ONNX).
  *
  * Flow:
  *  1. User clicks "Start" → browser screen-share picker
- *  2. Every 2.5 s: capture frame → auto-detect green table → JPEG crop
- *  3. POST /api/vision/scan → Gemini Flash reads cards + amounts
- *  4. GTO analysis on server → Telegram push + WebSocket broadcast
- *  5. Display advice in UI
+ *  2. Every 200 ms: tiny 64×36 pixel diff → detect significant change
+ *  3. On change: capture frame → auto-detect green table → run YOLO locally
+ *  4. YOLO detects cards in ~50-100ms, no server round-trip for vision
+ *  5. POST /api/vision/scan-cards → GTO analysis on server → Telegram + WebSocket
  *
- * No manual calibration. No Tesseract. Works with any poker client.
+ * No Gemini. No API key needed. Works offline. Faster than cloud vision.
  */
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { cn } from '@/lib/utils';
@@ -16,6 +16,7 @@ import { parseCard, type Card } from '@/lib/poker';
 import type { Position } from '@/lib/poker-gto';
 import { TelegramSetup } from '@/components/TelegramSetup';
 import { CardPicker } from '@/components/CardPicker';
+import { detectCards, cropCanvas, loadYoloModel } from '@/lib/yolo-cards';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Phase = 'idle' | 'requesting' | 'scanning';
@@ -149,7 +150,7 @@ export function ScreenScan() {
   const watchPxRef      = useRef<Uint8ClampedArray | null>(null);
   const lastScanTimeRef = useRef<number>(0);
   const hasCardsRef     = useRef(false);     // adaptive diff threshold
-  const busyRef         = useRef(0);         // concurrent Gemini call counter
+  const busyRef         = useRef(0);         // concurrent scan call counter
 
   // Manual card overrides (user tap-to-correct)
   const overrides   = useRef<Map<string, string>>(new Map()); // slot → card string
@@ -171,9 +172,19 @@ export function ScreenScan() {
     fetch('/api/vision/reset', { method: 'POST' }).catch(() => {});
   }, []);
 
-  // ── Full scan: capture frame → crop → Gemini → update UI ──────────────────
+  // ── Preload YOLO model when component mounts ──────────────────────────────
+  const [modelReady, setModelReady] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
+  useEffect(() => {
+    loadYoloModel()
+      .then(() => setModelReady(true))
+      .catch(e => setModelError(e?.message ?? 'Ошибка загрузки YOLO'));
+  }, []);
+
+  // ── Full scan: capture frame → YOLO locally → GTO on server ───────────────
   const scanTick = useCallback(async () => {
     if (busyRef.current > 0) return; // one at a time
+    if (!modelReady) return;         // model not loaded yet
     const video  = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || video.readyState < 2) return;
@@ -181,42 +192,45 @@ export function ScreenScan() {
     const vw = video.videoWidth, vh = video.videoHeight;
     if (!vw || !vh) return;
 
-    // Draw full frame and crop table
+    // Draw full frame
     canvas.width = vw; canvas.height = vh;
     canvas.getContext('2d')!.drawImage(video, 0, 0);
 
     const bounds = findTableBounds(canvas);
     setTableFound(bounds !== null);
 
-    const jpeg = bounds
-      ? cropToJpeg(canvas, bounds.x, bounds.y, bounds.w, bounds.h)
-      : cropToJpeg(canvas, 0, 0, vw, vh, 0.72);
+    // Crop to table region for YOLO (whole frame if table not found)
+    const yoloCanvas = bounds
+      ? cropCanvas(canvas, bounds.x, bounds.y, bounds.w, bounds.h)
+      : canvas;
 
     lastScanTimeRef.current = Date.now();
     busyRef.current++;
     setAnalyzing(true);
 
     try {
-      const res = await fetch('/api/vision/scan', {
+      // ── Step 1: local YOLO card detection (~50-100 ms) ──────────────────
+      const yoloResult = await detectCards(yoloCanvas);
+      if (!yoloResult || yoloResult.holeCards.length < 2) return; // no hand visible
+
+      // ── Step 2: GTO analysis on server (cards already known) ────────────
+      const res = await fetch('/api/vision/scan-cards', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          image: jpeg,
+          holeCards:  yoloResult.holeCards,
+          boardCards: yoloResult.boardCards,
           position,
           players,
-          potSizeOverride:   potSize   ?? undefined,
-          betToCallOverride: betToCall ?? undefined,
+          potSize:   potSize   ?? undefined,
+          betToCall: betToCall ?? undefined,
         }),
       });
 
-      if (!res.ok) {
-        // Rate-limit / server error — back off 5 s before next scan
-        lastScanTimeRef.current = Date.now() + 5_000;
-        return;
-      }
+      if (!res.ok) return;
       let data: any;
       try { data = await res.json(); } catch { return; }
-      if (!data.ok) return; // no cards this frame
+      if (!data.ok) return;
 
       const newResult = data as ScanResult;
       setResult(newResult);
@@ -238,17 +252,13 @@ export function ScreenScan() {
       setBoardCards(bParsed);
       setHoleStrs(newResult.holeCards);
       setBoardStrs(newResult.boardCards);
-
-      if (newResult.potSize > 0 && potSize === null)   { setPotSize(newResult.potSize);     setAutoPot(true); }
-      if (newResult.betToCall > 0 && betToCall === null){ setBetToCall(newResult.betToCall); setAutoBet(true); }
-      if (newResult.players > 0)                        { setPlayers(newResult.players);     setAutoPlayers(true); }
     } catch (err: any) {
-      console.warn('vision/scan error:', err?.message);
+      console.warn('yolo/scan-cards error:', err?.message);
     } finally {
       busyRef.current = Math.max(0, busyRef.current - 1);
       setAnalyzing(busyRef.current > 0);
     }
-  }, [position, players, potSize, betToCall]);
+  }, [position, players, potSize, betToCall, modelReady]);
 
   const scanTickRef = useRef(scanTick);
   useEffect(() => { scanTickRef.current = scanTick; }, [scanTick]);
@@ -293,10 +303,10 @@ export function ScreenScan() {
         const threshold = hasCardsRef.current ? 0.04 : 0.015;
         if (diff < threshold) return; // cosmetic change — skip
 
-        // Cooldown: min 800 ms between scans (Gemini needs time)
+        // Cooldown: min 300 ms between scans (YOLO is local, ~50-100ms per frame)
         const now = Date.now();
         if (busyRef.current > 0) return;
-        if (now - lastScanTimeRef.current < 800) return;
+        if (now - lastScanTimeRef.current < 300) return;
 
         // Significant change detected — scan NOW
         scanTickRef.current();
@@ -338,16 +348,31 @@ export function ScreenScan() {
           <div>
             <h2 className="text-zinc-100 text-lg font-bold mb-2">Авто-сканирование</h2>
             <p className="text-zinc-500 text-sm leading-relaxed max-w-xs">
-              Запусти захват экрана — Gemini сам найдёт карты,
+              Запусти захват экрана — YOLOv8 найдёт карты прямо в браузере,
               посчитает эквити и пришлёт совет в Telegram.
-              Никакой ручной калибровки.
+              Никакой ручной калибровки. Никаких API-ключей.
             </p>
           </div>
+
+          {/* Model loading state */}
+          {!modelReady && !modelError && (
+            <div className="flex items-center gap-2 text-zinc-400 text-sm">
+              <div className="w-4 h-4 border-2 border-zinc-500 border-t-transparent rounded-full animate-spin" />
+              Загрузка модели YOLO…
+            </div>
+          )}
+          {modelError && (
+            <div className="text-red-400 text-sm px-4 text-center">
+              ⚠ Ошибка модели: {modelError}
+            </div>
+          )}
+
           <button
             onClick={startCapture}
-            className="w-full max-w-xs py-3 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-white font-bold text-base transition-colors"
+            disabled={!modelReady}
+            className="w-full max-w-xs py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-white font-bold text-base transition-colors"
           >
-            ▶ Начать сканирование
+            {modelReady ? '▶ Начать сканирование' : '⏳ Ожидание модели…'}
           </button>
           {error && (
             <p className="text-red-400 text-sm px-4">{error}</p>
