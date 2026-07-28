@@ -1,5 +1,6 @@
 ---
 name: Poker Terminal YOLOv8 ONNX integration
+note: wasmPaths must point to CDN (not local public/) — Vite 7 blocks dynamic import() of .mjs files from public/; see fix in yolo-cards.ts
 description: How YOLOv8-nano card detection is integrated into ScreenScan, model source, class format, and WASM setup.
 ---
 

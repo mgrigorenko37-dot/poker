@@ -13,9 +13,11 @@
 import * as ort from 'onnxruntime-web';
 
 // ── WASM setup ────────────────────────────────────────────────────────────────
-// Use locally served WASM files (public/models/) — no CDN dependency.
-// Single-threaded avoids SharedArrayBuffer / COOP-COEP header requirements.
-ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}models/`;
+// Vite 7 blocks dynamic import() of .mjs files from public/ — onnxruntime-web
+// uses dynamic import to load its worker .mjs files, which Vite intercepts and
+// rejects. Loading from CDN bypasses this restriction while keeping the .onnx
+// model file served locally. Single-threaded avoids SharedArrayBuffer / COOP-COEP.
+ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/';
 ort.env.wasm.numThreads = 1;
 
 // ── Constants ──────────────────────────────────────────────────────────────────
