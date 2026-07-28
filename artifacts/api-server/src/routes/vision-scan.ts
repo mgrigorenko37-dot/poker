@@ -69,13 +69,12 @@ router.post("/vision/scan-cards", (req, res) => {
 
   // ── Board count validation ────────────────────────────────────────────────
   // Texas Hold'em only ever has 0 (preflop), 3 (flop), 4 (turn), or 5 (river)
-  // community cards. A count of 1 or 2 means YOLO caught the animation mid-deal
-  // and the detection is unreliable — reject silently to avoid firing Telegram
-  // with wrong board state.
-  if (!isValidBoardCount(boardStrings.length)) {
-    logger.warn({ boardCount: boardStrings.length }, "scan-cards: invalid board count, ignoring");
-    res.json({ ok: false, error: `invalid board count ${boardStrings.length} (expected 0,3,4,5)` });
-    return;
+  // community cards. A count of 1 or 2 means YOLO caught the animation mid-deal.
+  // We still run analysis for the UI (don't block the response), but mark it so
+  // Telegram is suppressed — bad board state must never fire a push notification.
+  const boardCountSuspect = !isValidBoardCount(boardStrings.length);
+  if (boardCountSuspect) {
+    logger.warn({ boardCount: boardStrings.length }, "scan-cards: suspect board count — analysis runs but Telegram suppressed");
   }
 
   // ── Hole ∩ board duplicate check ─────────────────────────────────────────
@@ -152,10 +151,14 @@ router.post("/vision/scan-cards", (req, res) => {
   const handHistory = getHandHistory();
   const opponentProfile = getOpponentSummary();
   if (trigger) {
-    if (minConfidence >= TELEGRAM_MIN_CONF) {
-      fireTelegram({ ...output, handHistory, opponentProfile }, trigger);
+    const suppressReason =
+      boardCountSuspect          ? `board count ${validBoardStrings.length} not in {0,3,4,5}` :
+      minConfidence < TELEGRAM_MIN_CONF ? `low confidence ${minConfidence.toFixed(2)} < ${TELEGRAM_MIN_CONF}` :
+      null;
+    if (suppressReason) {
+      logger.warn({ suppressReason, trigger: trigger.reason }, "scan-cards: Telegram suppressed");
     } else {
-      logger.warn({ minConfidence, trigger: trigger.reason }, "scan-cards: Telegram suppressed (low confidence)");
+      fireTelegram({ ...output, handHistory, opponentProfile }, trigger);
     }
   }
 

@@ -218,9 +218,11 @@ export function ScreenScan() {
 
       // ── Fold detection ───────────────────────────────────────────────────
       // If YOLO found cards but no hole cards → player may have folded.
-      // Require 3 consecutive such frames (~1 s) before declaring fold to
-      // avoid triggering on momentary YOLO misses.
+      // Require 8 consecutive such frames (~1.6 s) before declaring fold.
       if (!yoloResult || yoloResult.holeCards.length < 2) {
+        console.log('[ScreenScan] no hole cards —',
+          yoloResult ? `board=${yoloResult.boardCards.join(',')} folded=${yoloResult.folded}` : 'null result',
+          `noCardFrames=${noCardFrames.current + 1}`);
         if (yoloResult?.folded || !yoloResult) {
           noCardFrames.current++;
         } else {
@@ -256,11 +258,21 @@ export function ScreenScan() {
       // the same detected cards (e.g. Ah in hole vs Ah in board) is treated as
       // a change and doesn't bypass the stability check.
       const currentKey =
-        [...yoloResult.holeCards].sort().join(',') + '|' + yoloResult.boardCards.join(',');
+        [...yoloResult.holeCards].sort().join(',') + '|' + [...yoloResult.boardCards].sort().join(',');
       if (currentKey !== lastHoleKeyRef.current) {
         lastHoleKeyRef.current = currentKey;
-        return; // wait for confirmation on next frame
+        console.debug('[ScreenScan] new key stored, scheduling confirmation:', currentKey);
+        // ── Critical: schedule a forced confirmation scan ─────────────────────
+        // The motion-watcher only fires on pixel changes (frameDiff > threshold).
+        // On a static table nothing moves, so frame 2 would never arrive and the
+        // analysis would silently stall. Fire a guaranteed confirmation after 350ms
+        // (enough time for the current scanTick to complete, ~50-150ms for YOLO).
+        setTimeout(() => {
+          if (busyRef.current === 0) scanTickRef.current();
+        }, 350);
+        return;
       }
+      console.debug('[ScreenScan] key confirmed, sending to server:', currentKey);
 
       // ── Step 2: GTO analysis on server (cards already known) ────────────
       // Compute minimum detection confidence across all detected cards — passed
