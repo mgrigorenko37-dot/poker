@@ -239,7 +239,7 @@ function nms(detections: Detection[]): Detection[] {
 // Constants are intentionally conservative so a mis-deal false-positive is
 // much less likely than a missed detection — better to under-detect than to
 // ghost the wrong hand into Telegram.
-const MIN_HOLE_GAP = 0.15;   // minimum cy gap to separate hole from board
+const MIN_HOLE_GAP = 0.10;   // minimum cy gap to separate hole from board (lowered from 0.15)
 const MIN_HOLE_CY  = 0.50;   // hole cards must be in the bottom half of the crop
 
 function assignCards(detections: Detection[]): { holeCards: string[]; boardCards: string[] } {
@@ -265,7 +265,7 @@ function assignCards(detections: Detection[]): { holeCards: string[]; boardCards
     return { holeCards: [], boardCards: unique.sort((a, b) => a.cx - b.cx).map(d => d.label) };
   }
 
-  // 3+ cards: check for a gap between position [1] (2nd from bottom) and [2]
+  // 3+ cards: primary — gap-based detection
   const gap = unique[1].cy - unique[2].cy;
   const avgHoleCy = (unique[0].cy + unique[1].cy) / 2;
 
@@ -277,8 +277,31 @@ function assignCards(detections: Detection[]): { holeCards: string[]; boardCards
     };
   }
 
-  // No clear gap → no hole cards visible (player folded or between hands)
-  return { holeCards: [], boardCards: [] };
+  // Fallback: no clear vertical gap — split by MIN_HOLE_CY zone.
+  // This handles table layouts where hole and board are closer together than
+  // MIN_HOLE_GAP, and also avoids the old bug of returning empty boardCards
+  // (which triggered false fold detection on the flop).
+  const inHoleZone  = unique.filter(d => d.cy >= MIN_HOLE_CY);  // bottom half
+  const inBoardZone = unique.filter(d => d.cy <  MIN_HOLE_CY);  // middle/top
+
+  if (inHoleZone.length >= 2 && inBoardZone.length > 0) {
+    // Some cards clearly in hole zone, others in board zone → assign by zone
+    const hole  = inHoleZone.slice(0, 2); // bottom-most 2 in hole zone
+    const board = [...inHoleZone.slice(2), ...inBoardZone].sort((a, b) => a.cx - b.cx);
+    return {
+      holeCards:  hole.map(d => d.label),
+      boardCards: board.map(d => d.label),
+    };
+  }
+
+  // All cards in same vertical zone — can't reliably distinguish hole from board.
+  // Return everything as board cards (player folded or cards grouped tightly on table).
+  // Do NOT return empty boardCards here — that was the old bug that caused false folds
+  // during flop animations when the gap check transiently failed.
+  return {
+    holeCards:  [],
+    boardCards: unique.sort((a, b) => a.cx - b.cx).map(d => d.label),
+  };
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────

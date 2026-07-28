@@ -227,7 +227,7 @@ export function ScreenScan() {
           noCardFrames.current = 0;
         }
 
-        if (hasCardsRef.current && noCardFrames.current >= 3) {
+        if (hasCardsRef.current && noCardFrames.current >= 8) {  // 8 frames ≈ 1.6 s — survives flop animation
           // Confirmed fold: had cards, now they're gone
           hasCardsRef.current = false;
           noCardFrames.current = 0;
@@ -251,7 +251,12 @@ export function ScreenScan() {
       // Prevents single-frame misreads (wrong rank or suit) from going to
       // Telegram. Applies to both preflop and new street events.
       // Frame 1: new key → store → skip.  Frame 2: same key → send.
-      const currentKey = [...yoloResult.holeCards, ...yoloResult.boardCards].sort().join(',');
+      //
+      // Key separates hole from board with '|' so that a hole↔board swap of
+      // the same detected cards (e.g. Ah in hole vs Ah in board) is treated as
+      // a change and doesn't bypass the stability check.
+      const currentKey =
+        [...yoloResult.holeCards].sort().join(',') + '|' + yoloResult.boardCards.join(',');
       if (currentKey !== lastHoleKeyRef.current) {
         lastHoleKeyRef.current = currentKey;
         return; // wait for confirmation on next frame
