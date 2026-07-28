@@ -49,6 +49,9 @@ GAME_PROFILES = [
         "chip_hsv_lo":  [15,  80, 120],
         "chip_hsv_hi":  [45, 255, 255],
         "preset":       "world_poker_club_desktop_6max.json",
+        # WPC использует другие пропорции стола, чем Ton Poker.
+        # compute_regions() даёт неверные координаты → пресет-приоритет.
+        "prefer_preset_regions": True,
     },
     {
         "name":         "Ton Poker",
@@ -185,15 +188,25 @@ def ensure_config(profile: Optional[dict]) -> dict:
         if os.path.exists(preset_path):
             with open(preset_path, encoding="utf-8") as f:
                 preset = json.load(f)
-            for key in ("regions", "money_regions", "card_height_pct"):
+            for key in ("regions", "money_regions", "card_height_pct", "seat_regions"):
                 if key in preset:
                     cfg[key] = preset[key]
+            # Удаляем служебные ключи (комментарии) из money_regions
+            if isinstance(cfg.get("money_regions"), dict):
+                cfg["money_regions"] = {k: v for k, v in cfg["money_regions"].items()
+                                        if not k.startswith("_")}
             cfg["active_preset"] = profile["preset"]
+            # prefer_preset_regions: берём из профиля (приоритет) или из пресет-файла
+            ppr = profile.get("prefer_preset_regions",
+                              preset.get("prefer_preset_regions", False))
+            cfg["prefer_preset_regions"] = ppr
             _save_config(cfg)
             if preset_changed and not no_regions:
                 print(f"  🔄 Профиль сменился → пресет обновлён: {profile['name']}")
             else:
                 print(f"  📦 Пресет применён: {profile['name']}")
+            if ppr:
+                print(f"  📌 Режим пресет-приоритет включён (prefer_preset_regions=true)")
 
     return cfg
 

@@ -1,7 +1,7 @@
 # Poker Scanner — локальный Python агент
 
 Захватывает экран, распознаёт карты и суммы, отправляет GTO-анализ в Telegram.  
-Работает на Windows. Протестировано с **Ton Poker** (десктоп и мобильный браузер).
+Работает на Windows. Поддерживаемые румы: **Ton Poker** и **World Poker Club**.
 
 ---
 
@@ -31,7 +31,7 @@ pip install -r requirements.txt
 
 ---
 
-### 3. Загрузи готовый пресет (Ton Poker)
+### 3. Загрузи готовый пресет
 
 ```bash
 python load_preset.py
@@ -42,14 +42,30 @@ python load_preset.py
 
   [1] Ton Poker — Desktop (Windows app/browser, 6-max, ландшафт)
   [2] Ton Poker — 6-max, портрет, мобильный браузер
+  [3] World Poker Club — Desktop (Windows, 6-max, ландшафт)
 
-Введи номер пресета: 1
+Введи номер пресета: 3
 ```
 
-Пресет скопирует готовые координаты карт и банка в `config.json`.
+Пресет скопирует готовые координаты карт, банка и мест оппонентов в `config.json`.
 
-> ⚠️ Пресет даёт **стартовые** координаты. Запусти `calibrate.py` чтобы точно
-> подстроить под свой экран, или сразу проверь через `poker_scanner.py`.
+> ⚠️ Пресет даёт **стартовые** координаты (измерены по 1024×576).
+> Запусти `calibrate.py` чтобы точно подстроить под свой экран.
+
+#### World Poker Club — особенности
+
+После загрузки пресета WPC в `config.json` автоматически появляется:
+```json
+"prefer_preset_regions": true
+```
+Это значит координаты карт берутся **из config.json**, а не вычисляются по HSV-детекту.
+Зона ставки (`bet`) — начальная оценка, уточни через `calibrate.py` Фазу 2.
+
+Рекомендуемый порядок для WPC:
+1. `python load_preset.py` → выбрать WPC
+2. `python poker_scanner.py` — проверить читаются ли карты
+3. Если зоны смещены → `python calibrate.py` (Фаза 1 + 2)
+4. `python collect_templates.py` — собрать шаблоны карт WPC (1-2 раздачи)
 
 ---
 
@@ -137,10 +153,16 @@ Win 24%
 
 ## Поддерживаемые пресеты
 
-| Пресет | Ориентация | card_height_pct |
-|--------|-----------|----------------|
-| Ton Poker Desktop (Windows app) | Ландшафт ~1040×585 | 10 |
-| Ton Poker Mobile (браузер) | Портрет ~468×847 | 9 |
+| Пресет | Ориентация | card_height_pct | Особенности |
+|--------|-----------|----------------|-------------|
+| Ton Poker Desktop (Windows app) | Ландшафт ~1040×585 | 10 | Авто-детект HSV |
+| Ton Poker Mobile (браузер) | Портрет ~468×847 | 9 | Авто-детект HSV |
+| World Poker Club Desktop | Ландшафт ~1024×576 | 11 | Пресет-приоритет¹ |
+
+¹ **Пресет-приоритет (`prefer_preset_regions: true`)** — пресет WPC используется как
+основной источник координат (не резервный). Авто-детект HSV запускается только для
+расчёта высоты карты из bbox. Это нужно потому, что пропорции стола WPC отличаются
+от Ton Poker и `compute_regions()` давал бы неверные координаты.
 
 Если у тебя другое разрешение — запусти `calibrate.py` для точной настройки.
 
@@ -182,17 +204,21 @@ Win 24%
 ```
 python/
 ├── poker_scanner.py        — основной сканер
+├── auto.py                 — авто-запуск: находит окно покер-рума, настраивает профиль
 ├── calibrate.py            — интерактивная калибровка
 ├── collect_templates.py    — сбор шаблонов карт
 ├── load_preset.py          — загрузка готового пресета
-├── card_utils.py           — общие функции: detect_suit, extract_card_region
-├── config.json             — твои настройки (создаётся из example)
+├── debug_detector.py       — визуальная проверка авто-детекта стола (debug_output.png)
+├── card_utils.py           — detect_suit, extract_card_region
+├── table_detector.py       — HSV-детект стола, compute_regions, detect_bet_chips
+├── config.json             — твои настройки (создаётся из example или load_preset)
 ├── config.example.json     — пример конфига
 ├── requirements.txt        — зависимости Python
 ├── presets/
 │   ├── ton_poker_desktop_6max.json
-│   └── ton_poker_6max.json
-└── templates/              — 52 PNG шаблона карт (создаётся автоматически)
+│   ├── ton_poker_6max.json
+│   └── world_poker_club_desktop_6max.json   ← WPC (prefer_preset_regions=true)
+└── templates/              — 52 PNG шаблона карт (создаётся collect_templates.py)
 ```
 
 ---

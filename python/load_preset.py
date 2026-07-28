@@ -62,8 +62,9 @@ def main():
 
     cfg = load_config()
 
-    # Копируем только координатные поля, не трогаем server_url и т.д.
-    for key in ("regions", "money_regions", "card_height_pct"):
+    # Копируем координатные поля, не трогаем server_url и т.д.
+    for key in ("regions", "money_regions", "card_height_pct",
+                "seat_regions", "prefer_preset_regions"):
         if key in preset:
             cfg[key] = preset[key]
 
@@ -71,6 +72,10 @@ def main():
     for k in list(cfg.keys()):
         if k.startswith("_"):
             cfg.pop(k)
+    # Убираем служебные ключи внутри money_regions
+    if isinstance(cfg.get("money_regions"), dict):
+        cfg["money_regions"] = {k: v for k, v in cfg["money_regions"].items()
+                                if not k.startswith("_")}
 
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -78,6 +83,8 @@ def main():
     print(f"\n✅ Пресет загружен: {preset.get('_name', '')}")
     print(f"   {len(cfg.get('regions', []))} карточных регионов")
     print(f"   card_height_pct = {cfg.get('card_height_pct', '?')}")
+    if cfg.get("prefer_preset_regions"):
+        print("   📌 prefer_preset_regions=true (координаты пресета — основные)")
     print(f"\n⚠️  Пресет даёт СТАРТОВЫЕ координаты.")
     print("   Запусти python calibrate.py чтобы точно подстроить под свой экран.")
     print("   Или сразу запускай python poker_scanner.py — если координаты совпали.")

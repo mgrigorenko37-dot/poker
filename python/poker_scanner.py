@@ -590,7 +590,15 @@ def main():
     manual_regions  = cfg.get("regions", [])
     use_auto_detect = True   # всегда пробуем авто; фолбек если стол не найден
 
-    if len(manual_regions) >= 5:
+    # prefer_preset_regions=True → пресет PRIMARY, авто-детект только для высоты карты.
+    # Нужно для румов с другими пропорциями стола (World Poker Club и др.),
+    # где compute_regions() даёт неверные координаты.
+    prefer_preset = cfg.get("prefer_preset_regions", False) and len(manual_regions) >= 5
+
+    if prefer_preset:
+        print("📋 Регионы: пресет-приоритет (prefer_preset_regions=true)")
+        print("   Авто-детект HSV активен только для расчёта высоты карты.")
+    elif len(manual_regions) >= 5:
         print("📋 Регионы: config.json загружен (резерв на случай потери стола)")
     else:
         print("📋 Регионы: только авто-детект (config.json не откалиброван)")
@@ -663,7 +671,15 @@ def main():
         # ── Авто-детект стола ─────────────────────────────────────────────────
         regions_dict, dbg = get_table_state(frame)
 
-        if regions_dict is not None:
+        if prefer_preset:
+            # Пресет-приоритет (напр. World Poker Club): координаты карт/денег
+            # берём из config.json — они точнее compute_regions() для этого рума.
+            # Авто-детект всё равно запущен выше — только для высоты карты (bbox).
+            regions       = manual_regions
+            money_regions = manual_money
+            seat_regions  = manual_seats
+            # table_miss не обновляем — отсутствие стола в HSV ожидаемо и нормально
+        elif regions_dict is not None:
             # Стол найден — используем динамические регионы
             regions      = regions_dict["regions"]
             money_regions = regions_dict["money_regions"]
