@@ -1,0 +1,311 @@
+import random
+import yaml
+import shutil
+from pathlib import Path
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Общий список классов
+# ─────────────────────────────────────────────────────────────────────────────
+
+CARD_CLASSES = [
+    '10C','10D','10H','10S',
+    '2C','2D','2H','2S',
+    '3C','3D','3H','3S',
+    '4C','4D','4H','4S',
+    '5C','5D','5H','5S',
+    '6C','6D','6H','6S',
+    '7C','7D','7H','7S',
+    '8C','8D','8H','8S',
+    '9C','9D','9H','9S',
+    'AC','AD','AH','AS',
+    'JC','JD','JH','JS',
+    'KC','KD','KH','KS',
+    'QC','QD','QH','QS'
+]
+
+TABLE_CLASSES = [
+    'dealer_button',
+    'player_folded',
+    'player_away',
+    'pot_chips',
+    'player_bet',
+    'stack_label'
+]
+
+ALL_CLASSES = CARD_CLASSES + TABLE_CLASSES
+CLASS_MAP = {name: index for index, name in enumerate(ALL_CLASSES)}
+
+SOURCE_ROOT = Path('/content/rf_datasets')
+MERGED = Path('/content/merged')
+
+# Удаляем старый пустой результат и создаём заново
+if MERGED.exists():
+    shutil.rmtree(MERGED)
+
+for split in ['train', 'val']:
+    (MERGED / 'images' / split).mkdir(parents=True, exist_ok=True)
+    (MERGED / 'labels' / split).mkdir(parents=True, exist_ok=True)
+
+
+def normalize_class_name(name, index):
+    """
+    Приводит названия классов разных датасетов к нашим названиям.
+    Если датасет использует классы 0..51, сохраняем соответствие по индексу.
+    """
+    original = str(name).strip()
+    normalized = original.upper().replace(' ', '').replace('_', '')
+
+    # Датасет с классами 0, 1, 2 ... 51
+    if normalized.isdigit():
+        numeric_index = int(normalized)
+        if 0 <= numeric_index < 52:
+            return CARD_CLASSES[numeric_index]
+
+    # Если names в YAML не подходят, но индекс находится в диапазоне карт
+    if index < 52 and normalized in ['', 'NONE']:
+        return CARD_CLASSES[index]
+
+    # Нормализация популярных вариантов названий мастей
+    replacements = {
+        'HEARTS': 'H',
+        'HEART': 'H',
+        'DIAMONDS': 'D',
+        'DIAMOND': 'D',
+        'CLUBS': 'C',
+        'CLUB': 'C',
+        'SPADES': 'S',
+        'SPADE': 'S',
+        'ACE': 'A',
+        'JACK': 'J',
+        'QUEEN': 'Q',
+        'KING': 'K',
+    }
+
+    result = normalized
+    for old, new in replacements.items():
+        result = result.replace(old, new)
+
+    # Ищем карту среди известных названий
+    for card in CARD_CLASSES:
+        if result == card or card in result:
+            return card
+
+    return None
+
+
+def resolve_path(value, yaml_dir):
+    """Преобразует путь из data.yaml в абсолютный путь."""
+    if value is None:
+        return None
+
+    path = Path(str(value))
+
+    if path.is_absolute():
+        return path
+
+    # Сначала путь относительно папки data.yaml
+    candidate = yaml_dir / path
+    if candidate.exists():
+        return candidate
+
+    # Затем путь относительно указанного path в YAML
+    return candidate
+
+
+def copy_dataset(dataset_dir, yaml_path):
+    with open(yaml_path, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f) or {}
+
+    names = config.get('names', [])
+
+    # Иногда names записан как словарь {0: '10C', 1: '10D'}
+    if isinstance(names, dict):
+        names = [names[key] for key in sorted(names, key=lambda x: int(x))]
+
+    if not names:
+        names = [str(i) for i in range(52)]
+
+    print(f'\n📦 Датасет: {dataset_dir.name}')
+    print(f'   YAML: {yaml_path}')
+    print(f'   Классов в YAML: {len(names)}')
+
+    copied = 0
+
+    # Берём реальные split-пути из data.yaml
+    split_paths = {
+        'train': config.get('train'),
+        'val': config.get('val', config.get('valid')),
+        'test': config.get('test'),
+    }
+
+    for source_split, split_path_value in split_paths.items():
+        if not split_path_value:
+            continue
+
+        image_dir = resolve_path(split_path_value, yaml_path.parent)
+
+        if image_dir is None or not image_dir.exists():
+            print(f'   ⚠️ Папка не найдена: {image_dir}')
+            continue
+
+        # Обычно image_dir заканчивается на images.
+        # Разметка находится рядом в labels.
+        if image_dir.name.lower() == 'images':
+            label_dir = image_dir.parent / 'labels'
+        else:
+            label_dir = image_dir.parent / 'labels'
+
+        # Иногда YAML указывает не папку, а файл/список — тогда ищем рядом.
+        image_files = [
+            p for p in image_dir.rglob('*')
+            if p.is_file() and p.suffix.lower() in ['.jpg', '.jpeg', '.png']
+        ]
+
+        if not image_files:
+            print(f'   ⚠️ Изображения не найдены: {image_dir}')
+            continue
+
+        output_split = 'val' if source_split in ['val', 'valid', 'test'] else 'train'
+
+        for image_path in image_files:
+            label_path = label_dir / f'{image_path.stem}.txt'
+
+            if not label_path.exists():
+                # Резервный поиск одноимённой разметки во всём датасете
+                matches = list(dataset_dir.rglob(f'{image_path.stem}.txt'))
+                if matches:
+                    label_path = matches[0]
+
+            if not label_path.exists():
+                continue
+
+            unique_stem = f'{dataset_dir.name}_{output_split}_{image_path.stem}'
+
+            output_image = (
+                MERGED / 'images' / output_split /
+                f'{unique_stem}{image_path.suffix.lower()}'
+            )
+            output_label = (
+                MERGED / 'labels' / output_split /
+                f'{unique_stem}.txt'
+            )
+
+            output_lines = []
+
+            with open(label_path, 'r', encoding='utf-8') as label_file:
+                for line in label_file:
+                    parts = line.strip().split()
+
+                    if len(parts) < 5:
+                        continue
+
+                    old_index = int(float(parts[0]))
+
+                    if old_index < 0 or old_index >= len(names):
+                        continue
+
+                    class_name = normalize_class_name(
+                        names[old_index],
+                        old_index
+                    )
+
+                    if class_name not in CLASS_MAP:
+                        continue
+
+                    new_index = CLASS_MAP[class_name]
+                    output_lines.append(
+                        f'{new_index} {" ".join(parts[1:])}'
+                    )
+
+            # Не копируем изображение без единой корректной разметки
+            if not output_lines:
+                continue
+
+            shutil.copy2(image_path, output_image)
+            output_label.write_text(
+                '\n'.join(output_lines),
+                encoding='utf-8'
+            )
+            copied += 1
+
+    print(f'   ✅ Добавлено изображений: {copied}')
+    return copied
+
+
+# Ищем ВСЕ YAML-файлы внутри скачанных датасетов
+yaml_files = list(SOURCE_ROOT.rglob('data.yaml'))
+yaml_files += list(SOURCE_ROOT.rglob('data.yml'))
+
+print(f'Найдено YAML-файлов: {len(yaml_files)}')
+
+total = 0
+
+for yaml_path in yaml_files:
+    # Не обрабатываем случайно созданный общий YAML
+    if yaml_path.parent == MERGED:
+        continue
+
+    total += copy_dataset(yaml_path.parent, yaml_path)
+
+
+# Если val отсутствует, переносим 10% train в val
+train_images = list((MERGED / 'images' / 'train').glob('*'))
+val_images = list((MERGED / 'images' / 'val').glob('*'))
+
+if len(train_images) > 10 and len(val_images) == 0:
+    random.seed(42)
+    random.shuffle(train_images)
+
+    val_count = max(1, int(len(train_images) * 0.1))
+
+    for image_path in train_images[:val_count]:
+        label_path = (
+            MERGED / 'labels' / 'train' /
+            f'{image_path.stem}.txt'
+        )
+
+        shutil.move(
+            str(image_path),
+            str(MERGED / 'images' / 'val' / image_path.name)
+        )
+
+        if label_path.exists():
+            shutil.move(
+                str(label_path),
+                str(MERGED / 'labels' / 'val' / label_path.name)
+            )
+
+
+# Создаём общий data.yaml для обучения
+merged_yaml = {
+    'path': str(MERGED),
+    'train': 'images/train',
+    'val': 'images/val',
+    'nc': len(ALL_CLASSES),
+    'names': ALL_CLASSES,
+}
+
+with open(MERGED / 'data.yaml', 'w', encoding='utf-8') as f:
+    yaml.dump(
+        merged_yaml,
+        f,
+        allow_unicode=True,
+        sort_keys=False
+    )
+
+train_count = len(list((MERGED / 'images' / 'train').glob('*')))
+val_count = len(list((MERGED / 'images' / 'val').glob('*')))
+
+print('\n' + '=' * 60)
+print(f'✅ Датасет собран: {train_count} train / {val_count} val')
+print(f'   Всего: {train_count + val_count} изображений')
+print(f'   Классов: {len(ALL_CLASSES)}')
+print('   Карты: 0–51')
+print('   Дополнительные классы стола: 52–57')
+print('=' * 60)
+
+if train_count == 0:
+    print('\n❌ Изображения всё ещё не найдены.')
+    print('Проверь результат диагностической ячейки выше.')
+else:
+    print('\n✅ Теперь запускай ячейку 5 — тренировку.')
