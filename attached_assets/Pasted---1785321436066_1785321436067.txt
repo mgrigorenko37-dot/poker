@@ -1,0 +1,266 @@
+Модель компьютерного зрения игральных карт
+к
+Расширенные стартапы
+Задача:
+Лицензия:
+Общественное достояние
+
+33
+звезда с
+153 тыс . просмотров
+6,55 тыс . загрузок
+
+Модель развертывания
+
+Набор данных Fork
+
+Предварительный просмотр изображений
+Обзор
+Изображения
+10 100
+Набор данных
+4
+Изображения	10 тыс.
+Версии набора данных	4
+Модели	3
+mAP@50
+99,5 %
+Точность
+99,9 %
+Отзывать
+100,0 %
+Классы ( 52 )
+10С
+10D
+10H
+10S
+2С
+2D
+2H
+2S
+3С
+3D
+3H
+3S
+4С
+4D
+4H
+4S
+5С
+5D
+5H
+5S
+6С
+6D
+6H
+6S
+7С
+7D
+7H
+7S
+8С
+8D
+8H
+8S
+9С
+9D
+9H
+9С
+кондиционер
+ОБЪЯВЛЕНИЕ
+АХ
+КАК
+Дж.С.
+ДжД
+Дж. Х.
+JS
+КС
+КД
+КХ
+КС
+Контроль качества
+QD
+QH
+QS
+Теги
+Обнаружение объектов
+Модель
+yolov8n
+yolov8
+щелчок
+Обновлено 5 месяцев назад
+
+Отчет
+Как использовать API для обнаружения игральных карт
+
+Модель развертывания
+Попробуйте эту модель
+Перетащите изображение сюда или нажмите, чтобы загрузить.
+
+
+игральные карты-ow27d/4
+
+Загрузка модели yolov8n
+Или попробуйте тестовое изображение. 
+Пример 1
+Пример 2
+Пример 3
+Пример 4
+
+Дополнительная информация о модели
+Фрагменты кода
+Python
+cURL
+JavaScript
+
+Больше вариантов
+from inference_sdk import InferenceHTTPClient
+
+CLIENT = InferenceHTTPClient(
+    api_url="https://serverless.roboflow.com",
+    api_key="sZi*****************"
+)
+
+result = CLIENT.infer("YOUR_IMAGE.jpg", model_id="playing-cards-ow27d/4")
+
+Предоставьте своему агенту все необходимое.
+
+Скопировать подсказку
+Или воспользуйтесь бесплатным API для обнаружения 10C, 10D и 10H.
+Работает на основе общей модели обнаружения.
+
+
+Развернуть эту модель
+Код
+
+Python
+pip install inference-sdk
+# 1. Import the library
+from inference_sdk import InferenceHTTPClient
+
+# 2. Connect to your workspace
+client = InferenceHTTPClient(
+  api_url="https://serverless.roboflow.com",
+  api_key="sZi*****************"
+)
+
+# 3. Run your workflow on an image
+result = client.run_workflow(
+  workspace_name="mgrigorenko37-gmail-com",
+  workflow_id="<YOUR_WORKFLOW_ID>",
+  images={
+    "image": "YOUR_IMAGE.jpg"  # Path to your image file
+  },
+  parameters={
+    "classes": "
+from inference_sdk import InferenceHTTPClient
+
+# 2. Connect to your workspace
+client = InferenceHTTPClient(
+  api_url="https://serverless.roboflow.com",
+  api_key="API_KEY"
+)
+
+# 3. Run your workflow on an image
+result = client.run_workflow(
+  workspace_name="mgrigorenko37-gmail-com",
+  workflow_id="<YOUR_WORKFLOW_ID>",
+  images={
+    "image": "YOUR_IMAGE.jpg"  # Path to your image file
+  },
+  parameters={
+    "classes": "
+from inference_sdk import InferenceHTTPClient
+
+# 2. Connect to your workspace
+client = InferenceHTTPClient(
+  api_url="https://serverless.roboflow.com",
+  api_key="API_KEY"
+)
+
+# 3. Run your workflow on an image
+result = client.run_workflow(
+  workspace_name="<YOUR_WORKSPACE>",
+  workflow_id="<YOUR_WORKFLOW_ID>",
+  images={
+    "image": "YOUR_IMAGE.jpg"  # Path to your image file
+  },
+  parameters={
+    "classes": "10C, 10D, 10H, 10S, 2C"
+  },
+  use_cache=True  # cache workflow definition for 15 minutes
+)
+
+# 4. Get your results
+print(result)
+
+Запуск на пользовательском образе
+Перетащите изображение сюда или нажмите, чтобы загрузить.
+
+Определение классов:
+10С
+10D
+10H
+10S
+2С
+Или введите пользовательский класс
+Или попробуйте тестовое изображение. 
+Пример 1
+Пример 2
+Пример 3
+Посмотреть все
+10 000
+изображений
+Образец игральных карт с изображением 3S, 5D, 7S.
+Образец игральных карт с изображением 2S, 6S, 8H.
+Образец игральных карт с изображением 10C, 3S, KS.
+Образец игральных карт с изображением 4D, 5C, KD.
+Образец игральных карт с изображением 3H, 4H, QH.
+Образец игральных карт с изображением 3D, 6C, AC.
+Образец игральных карт с изображением 10D, 7D, QC.
+Образец игральных карт с изображением 2H, 6H, 8D
+Образец игральных карт с изображением 4H, 7C, QD
+Образец игральных карт с изображением 2D, 3C, AD.
+Образец игральных карт с изображением 10S, 9C, JC.
+Образец игральных карт с изображением 5C, 6D, AS
+О модели игральных карт
+
+Обзор
+Набор данных «Игральные карты» представляет собой коллекцию синтетически сгенерированных карт, вписанных в различные типы фона. Вы сможете выполнять обнаружение объектов для определения как номера, так и масти карт.
+
+Пример видеоматериала
+
+
+Обучение и развертывание
+Модель игральных карт была обучена в Roboflow и доступна для вывода результатов на вкладке «Набор данных».
+
+Также можно создать модель подсчета карт для блэкджека или покера, используя YOLOR. Это достигается с помощью платформы Roboflow, на которой можно развернуть модель для надежного обнаружения в реальном времени. Подробнее можно узнать здесь: https://augmentedstartups.info/YOLOR-Get-Started
+
+Видеодемонстрация использования YOLOR для обучения : https://youtu.be/2lGTZuaH4ec
+
+О стартапах, использующих дополненную реальность
+Мы находимся на передовой линии развития искусственного интеллекта в области компьютерного зрения. Имея более 90 тысяч подписчиков на YouTube, мы реализуем интересные и инновационные проекты в этой области, создаем видео и курсы, чтобы каждый мог стать экспертом в этой сфере. Наша цель — создать мир, полный изобретателей, способных воплотить свои мечты в реальность.
+
+Показать больше
+Агент Робофлоу
+Расскажите агенту, что вы хотите построить.
+
+Создайте рабочий процесс с использованием общедоступной модели playing-cards-ow27d/4
+Открытый чат
+Ссылка на этот проект
+Лицензия
+Общественное достояние
+Если вы используете этот набор данных в научной работе, пожалуйста, сошлитесь на него, используя следующий BibTeX-код:
+
+@misc{ playing-cards-ow27d_dataset,
+  title = { Playing Cards Dataset },
+  type = { Open Source Dataset },
+  author = { Augmented Startups },
+  howpublished = { \url{ https://universe.roboflow.com/augmented-startups/playing-cards-ow27d } },
+  url = { https://universe.roboflow.com/augmented-startups/playing-cards-ow27d },
+  journal = { Roboflow Universe },
+  publisher = { Roboflow },
+  year = { 2026 },
+  month = { mar },
+  note = { visited on 2026-07-29 },
+}
