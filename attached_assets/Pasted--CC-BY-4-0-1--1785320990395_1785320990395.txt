@@ -1,0 +1,232 @@
+карты Модель компьютерного зрения
+к
+медиаколледж
+Задача:
+Лицензия:
+CC BY 4.0
+
+1
+звезда
+
+Модель развертывания
+
+Набор данных Fork
+
+Предварительный просмотр изображений
+Обзор
+Изображения
+26 001
+Набор данных
+3
+Изображения	26 тыс.
+Версии набора данных	3
+Модели	2
+mAP@50
+99,5 %
+Точность
+99,5 %
+Отзывать
+99,7 %
+Классы ( 52 )
+0
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+4
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+5
+50
+51
+6
+7
+8
+9
+Теги
+Обнаружение объектов
+Модель
+yolov12
+yolov12n
+yolov11
+yolov11n
+Обновлено 10 месяцев назад
+
+Отчет
+Как использовать API обнаружения карт
+
+Модель развертывания
+Попробуйте эту модель
+Перетащите изображение сюда или нажмите, чтобы загрузить.
+
+
+cards-qnasy/3
+
+Обнаружение объектов YOLOv11 (быстрое)
+Или попробуйте тестовое изображение. 
+Пример 1
+Пример 2
+Пример 3
+Пример 4
+
+Дополнительная информация о модели
+Фрагменты кода
+Python
+cURL
+JavaScript
+
+Больше вариантов
+from inference_sdk import InferenceHTTPClient
+
+CLIENT = InferenceHTTPClient(
+    api_url="https://serverless.roboflow.com",
+    api_key="sZi*****************"
+)
+
+result = CLIENT.infer("YOUR_IMAGE.jpg", model_id="cards-qnasy/3")
+
+Предоставьте своему агенту все необходимое.
+
+Скопировать подсказку
+Или воспользуйтесь бесплатным API для определения значений 0, 1 и 10.
+Работает на основе общей модели обнаружения.
+
+
+Развернуть эту модель
+Код
+
+Python
+pip install inference-sdk
+# 1. Import the library
+from inference_sdk import InferenceHTTPClient
+
+# 2. Connect to your workspace
+client = InferenceHTTPClient(
+  api_url="https://serverless.roboflow.com",
+  api_key="sZi*****************"
+)
+
+# 3. Run your workflow on an image
+result = client.run_workflow(
+  workspace_name="mgrigorenko37-gmail-com",
+  workflow_id="<YOUR_WORKFLOW_ID>",
+  images={
+    "image": "YOUR_IMAGE.jpg"  # Path to your image file
+  },
+  parameters={
+    "classes": "
+from inference_sdk import InferenceHTTPClient
+
+# 2. Connect to your workspace
+client = InferenceHTTPClient(
+  api_url="https://serverless.roboflow.com",
+  api_key="API_KEY"
+)
+
+# 3. Run your workflow on an image
+result = client.run_workflow(
+  workspace_name="mgrigorenko37-gmail-com",
+  workflow_id="<YOUR_WORKFLOW_ID>",
+  images={
+    "image": "YOUR_IMAGE.jpg"  # Path to your image file
+  },
+  parameters={
+    "classes": "0, 1, 10, 11, 12"
+  },
+  use_cache=True  # cache workflow definition for 15 minutes
+)
+
+# 4. Get your results
+print(result)
+
+Запуск на пользовательском образе
+Перетащите изображение сюда или нажмите, чтобы загрузить.
+
+Определение классов:
+0
+1
+10
+11
+12
+Или введите пользовательский класс
+Или попробуйте тестовое изображение. 
+Пример 1
+Пример 2
+Пример 3
+Посмотреть все
+26 тыс.
+изображений
+Образец карточных объектов, показывающий 33, 48
+Образец карточных объектов, показывающий 36, 50
+Образец карточек с изображениями 24, 40, 51, 8.
+Образец карточек с изображениями 10, 23, 46.
+Образец карточных объектов, показывающий 29, 6
+Образец карточек с изображениями 0, 16, 31, 51, 8.
+Образец карточек с изображениями 24 объектов
+Образец карточек с изображениями чисел 0, 1, 10, 23, 35, 42, 6.
+Образец карточек с изображениями 11, 23, 25, 45.
+Образец карточек с изображениями 25, 31, 39.
+Образец карточек с изображениями 22, 37, 7, 9
+Образец карточных объектов, показывающий 13, 35
+О моделях карточек
+Модель обнаружения объектов yolo12 для распознавания игральных карт.
+
+Агент Робофлоу
+Расскажите агенту, что вы хотите построить.
+
+Создайте рабочий процесс с помощью общедоступных карточек моделей - qnasy/3
+Открытый чат
+Ссылка на этот проект
+Лицензия
+CC BY 4.0
+Если вы используете этот набор данных в научной работе, пожалуйста, сошлитесь на него, используя следующий BibTeX-код:
+
+@misc{ cards-qnasy_dataset,
+  title = { cards Dataset },
+  type = { Open Source Dataset },
+  author = { mediacollege },
+  howpublished = { \url{ https://universe.roboflow.com/mediacollege/cards-qnasy } },
+  url = { https://universe.roboflow.com/mediacollege/cards-qnasy },
+  journal = { Roboflow Universe },
+  publisher = { Roboflow },
+  year = { 2025 },
+  month = { sep },
+  note = { visited on 2026-07-29 },
+}
