@@ -1,0 +1,95 @@
+import random, yaml, shutil
+from pathlib import Path
+
+# Классы — стандартные 52 карты (совместимо с playing_cards.onnx)
+# + новые классы покерного стола
+CARD_CLASSES = [
+    '10C','10D','10H','10S','2C','2D','2H','2S','3C','3D','3H','3S',
+    '4C','4D','4H','4S','5C','5D','5H','5S','6C','6D','6H','6S',
+    '7C','7D','7H','7S','8C','8D','8H','8S','9C','9D','9H','9S',
+    'AC','AD','AH','AS','JC','JD','JH','JS','KC','KD','KH','KS',
+    'QC','QD','QH','QS'
+]
+TABLE_CLASSES = ['dealer_button', 'player_folded', 'player_away', 'pot_chips', 'player_bet', 'stack_label']
+ALL_CLASSES   = CARD_CLASSES + TABLE_CLASSES
+CLASS_MAP     = {c: i for i, c in enumerate(ALL_CLASSES)}
+
+MERGED = Path('/content/merged')
+for split in ['train', 'val']:
+    (MERGED / 'images' / split).mkdir(parents=True, exist_ok=True)
+    (MERGED / 'labels' / split).mkdir(parents=True, exist_ok=True)
+
+def remap_label_file(src: Path, dst: Path, src_names: list[str]):
+    """Переписывает индексы классов под общий словарь."""
+    lines_out = []
+    with open(src) as f:
+        for line in f:
+            parts = line.strip().split()
+            if not parts: continue
+            old_idx = int(parts[0])
+            if old_idx >= len(src_names): continue
+            cls_name = src_names[old_idx]
+            # Нормализуем имя карты к нашему формату
+            cls_name = cls_name.upper().replace('_OF_', '').replace(' ', '')
+            # Примеры нормализации из разных датасетов:
+            # 'ace_of_hearts' -> 'AH', 'king-clubs' -> 'KC'
+            for rank in ['10','A','K','Q','J','2','3','4','5','6','7','8','9']:
+                for suit, letter in [('HEARTS','H'),('DIAMONDS','D'),('CLUBS','C'),('SPADES','S')]:
+                    if rank in cls_name and suit in cls_name:
+                        cls_name = rank + letter
+                        break
+            new_idx = CLASS_MAP.get(cls_name)
+            if new_idx is None: continue
+            lines_out.append(f"{new_idx} {' '.join(parts[1:])}")
+    if lines_out:
+        dst.write_text('\n'.join(lines_out))
+
+total = 0
+for ds_dir in Path('/content/rf_datasets').iterdir():
+    # Найдём data.yaml в датасете
+    yaml_files = list(ds_dir.rglob('data.yaml'))
+    if not yaml_files: continue
+    with open(yaml_files[0]) as f:
+        ds_yaml = yaml.safe_load(f)
+    src_names = ds_yaml.get('names', [])
+
+    for split in ['train', 'valid', 'val', 'test']:
+        out_split = 'val' if split in ('val','valid','test') else 'train'
+        img_dir = ds_dir / split / 'images'
+        lbl_dir = ds_dir / split / 'labels'
+        if not img_dir.exists():
+            img_dir = ds_dir / 'images' / split
+            lbl_dir = ds_dir / 'labels' / split
+        if not img_dir.exists(): continue
+
+        for img_path in img_dir.glob('*'):
+            if img_path.suffix.lower() not in ('.jpg','.jpeg','.png'): continue
+            lbl_path = (lbl_dir / img_path.stem).with_suffix('.txt')
+            if not lbl_path.exists(): continue
+            stem = f"{ds_dir.name}_{img_path.stem}"
+            dst_img = MERGED / 'images' / out_split / (stem + img_path.suffix)
+            dst_lbl = MERGED / 'labels' / out_split / (stem + '.txt')
+            shutil.copy(img_path, dst_img)
+            remap_label_file(lbl_path, dst_lbl, src_names)
+            total += 1
+
+train_imgs = list((MERGED / 'images' / 'train').glob('*'))
+val_imgs   = list((MERGED / 'images' / 'val').glob('*'))
+
+# Если val пустой — откусываем 10% от train
+if len(val_imgs) < 10:
+    random.shuffle(train_imgs)
+    for p in train_imgs[:max(10, len(train_imgs)//10)]:
+        lbl = (MERGED / 'labels' / 'train' / p.stem).with_suffix('.txt')
+        shutil.move(str(p),   MERGED / 'images' / 'val' / p.name)
+        if lbl.exists(): shutil.move(str(lbl), MERGED / 'labels' / 'val' / lbl.name)
+
+# data.yaml
+with open(MERGED / 'data.yaml', 'w') as f:
+    yaml.dump({'path': str(MERGED), 'train': 'images/train', 'val': 'images/val',
+               'nc': len(ALL_CLASSES), 'names': ALL_CLASSES}, f, allow_unicode=True, sort_keys=False)
+
+train_count = len(list((MERGED / 'images' / 'train').glob('*')))
+val_count   = len(list((MERGED / 'images' / 'val').glob('*')))
+print(f'\n✅ Датасет собран: {train_count} train / {val_count} val ({len(ALL_CLASSES)} классов)')
+print(f'   Карты: 0–51  |  Стол: 52–{len(ALL_CLASSES)-1}')
