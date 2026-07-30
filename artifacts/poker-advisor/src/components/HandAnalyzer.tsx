@@ -10,6 +10,92 @@ import { Loader2 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 
+// ---------------------------------------------------------------------------
+// CFR types
+// ---------------------------------------------------------------------------
+
+interface CfrResult {
+  action: string;                         // 'check' | 'fold' | 'call' | 'bet33' | 'bet75' | 'allin'
+  frequencies: Record<string, number>;    // e.g. { bet75: 0.73, check: 0.27 }
+  ev: number;
+  equity: number;
+  mc_equity: number;
+  iterations: number;
+  elapsed_ms: number;
+  used_range: boolean;
+  villain_range_pct: number | null;
+  error?: string;
+}
+
+const CFR_ACTION_DISPLAY: Record<string, string> = {
+  check: 'CHECK',
+  fold:  'FOLD',
+  call:  'CALL',
+  bet33: 'BET 33%',
+  bet75: 'BET 75%',
+  allin: 'ALL IN',
+};
+
+const CFR_ACTION_COLOR: Record<string, string> = {
+  fold:  'bg-red-700',
+  check: 'bg-zinc-600',
+  call:  'bg-blue-600',
+  bet33: 'bg-emerald-600',
+  bet75: 'bg-emerald-600',
+  allin: 'bg-amber-500',
+};
+
+const CFR_FREQ_COLOR: Record<string, string> = {
+  fold:  'bg-red-700',
+  check: 'bg-zinc-500',
+  call:  'bg-blue-600',
+  bet33: 'bg-emerald-600',
+  bet75: 'bg-emerald-500',
+  allin: 'bg-amber-500',
+};
+
+// ---------------------------------------------------------------------------
+// Helper: Card → "Ah" string
+// ---------------------------------------------------------------------------
+function cardToStr(c: CardType): string {
+  return `${RANK_CHARS[c.rank]}${c.suit}`;
+}
+
+// ---------------------------------------------------------------------------
+// CFR Frequencies bar
+// ---------------------------------------------------------------------------
+function CfrFreqBar({ frequencies }: { frequencies: Record<string, number> }) {
+  const entries = Object.entries(frequencies).sort((a, b) => b[1] - a[1]);
+  return (
+    <div className="space-y-2">
+      {/* Segmented bar */}
+      <div className="flex h-5 w-full rounded overflow-hidden gap-px">
+        {entries.map(([action, freq]) => (
+          <div
+            key={action}
+            className={cn('transition-all duration-500', CFR_FREQ_COLOR[action] ?? 'bg-zinc-600')}
+            style={{ width: `${freq * 100}%` }}
+          />
+        ))}
+      </div>
+      {/* Labels */}
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
+        {entries.map(([action, freq]) => (
+          <span key={action} className="flex items-center gap-1.5 text-xs text-zinc-400">
+            <span className={cn('inline-block w-2 h-2 rounded-sm', CFR_FREQ_COLOR[action] ?? 'bg-zinc-600')} />
+            {CFR_ACTION_DISPLAY[action] ?? action}
+            <span className="text-zinc-300 font-mono">{(freq * 100).toFixed(0)}%</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export function HandAnalyzer() {
   const [holeCards, setHoleCards] = useState<(CardType | null)[]>([null, null]);
   const [boardCards, setBoardCards] = useState<(CardType | null)[]>([null, null, null, null, null]);
@@ -26,6 +112,12 @@ export function HandAnalyzer() {
   const [isSimulating, setIsSimulating] = useState(false);
   const simTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // CFR state
+  const [cfrResult, setCfrResult] = useState<CfrResult | null>(null);
+  const [isCFRLoading, setIsCFRLoading] = useState(false);
+  const cfrAbortRef = useRef<AbortController | null>(null);
+  const cfrTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   const validHoleCards = holeCards.filter(Boolean) as CardType[];
   const validBoardCards = boardCards.filter(Boolean) as CardType[];
   const allUsedCards = [...validHoleCards, ...validBoardCards];
@@ -33,20 +125,17 @@ export function HandAnalyzer() {
   const currentEval = evaluateHand(validHoleCards, validBoardCards);
   const outs = calculateOuts(validHoleCards, validBoardCards);
 
+  // ── Local Monte Carlo equity ──────────────────────────────────────────────
   useEffect(() => {
-    if (simTimeoutRef.current) {
-      clearTimeout(simTimeoutRef.current);
-    }
+    if (simTimeoutRef.current) clearTimeout(simTimeoutRef.current);
 
     if (validHoleCards.length === 2) {
       setIsSimulating(true);
       simTimeoutRef.current = setTimeout(() => {
-        // Run sim
         const result = runMonteCarloSim(validHoleCards, validBoardCards, numPlayers, 5000);
         setSimResult(result);
         setIsSimulating(false);
         
-        // Save to history if we have enough info
         const historyItem = {
           id: Date.now().toString(),
           holeCards: validHoleCards,
@@ -56,21 +145,72 @@ export function HandAnalyzer() {
         };
         const existingStr = localStorage.getItem('poker_history');
         const existing = existingStr ? JSON.parse(existingStr) : [];
-        // Only save if it's a new state we haven't just saved
         if (existing.length === 0 || existing[0].winProb !== result.winProb) {
-           localStorage.setItem('poker_history', JSON.stringify([historyItem, ...existing].slice(0, 50)));
+          localStorage.setItem('poker_history', JSON.stringify([historyItem, ...existing].slice(0, 50)));
         }
-        
       }, 300);
     } else {
       setSimResult(null);
       setIsSimulating(false);
     }
     
-    return () => {
-      if (simTimeoutRef.current) clearTimeout(simTimeoutRef.current);
-    }
+    return () => { if (simTimeoutRef.current) clearTimeout(simTimeoutRef.current); };
   }, [JSON.stringify(validHoleCards), JSON.stringify(validBoardCards), numPlayers]);
+
+  // ── CFR postflop call ─────────────────────────────────────────────────────
+  useEffect(() => {
+    // CFR только постфлоп (3/4/5 карт борда) и при наличии банка
+    const isPostflop = validBoardCards.length === 3 || validBoardCards.length === 4 || validBoardCards.length === 5;
+    const isPushFold  = validBoardCards.length === 0 && stackBBs <= 20;
+
+    if (validHoleCards.length !== 2 || !isPostflop || isPushFold) {
+      setCfrResult(null);
+      return;
+    }
+
+    // Дебаунс 500ms — чтобы не стрелять при каждом нажатии цифры
+    if (cfrTimerRef.current) clearTimeout(cfrTimerRef.current);
+    if (cfrAbortRef.current) cfrAbortRef.current.abort();
+
+    cfrTimerRef.current = setTimeout(() => {
+      const controller = new AbortController();
+      cfrAbortRef.current = controller;
+      setIsCFRLoading(true);
+      setCfrResult(null);
+
+      const holeStrings  = validHoleCards.map(cardToStr);
+      const boardStrings = validBoardCards.map(cardToStr);
+
+      fetch('/api/cfr/solve', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal:  controller.signal,
+        body: JSON.stringify({
+          holeCards:     holeStrings,
+          boardCards:    boardStrings,
+          pot:           potSize > 0 ? potSize : 100,
+          stack:         myStack > 0 ? myStack : 1000,
+          cfrIterations: 150,
+        }),
+      })
+        .then(r => r.json())
+        .then((data: CfrResult) => {
+          setCfrResult(data);
+          setIsCFRLoading(false);
+        })
+        .catch(e => {
+          if (e.name !== 'AbortError') {
+            setCfrResult(null);
+            setIsCFRLoading(false);
+          }
+        });
+    }, 500);
+
+    return () => {
+      if (cfrTimerRef.current) clearTimeout(cfrTimerRef.current);
+      if (cfrAbortRef.current) cfrAbortRef.current.abort();
+    };
+  }, [JSON.stringify(validHoleCards), JSON.stringify(validBoardCards), potSize, myStack, stackBBs]);
 
   const updateHoleCard = (index: number, card: CardType | null) => {
     const newCards = [...holeCards];
@@ -85,11 +225,20 @@ export function HandAnalyzer() {
   };
 
   const potOdds = betToCall > 0 ? (betToCall / (potSize + betToCall)) : 0;
-  
-  let recommendation = { action: 'CHECK', color: 'bg-zinc-600', text: 'Waiting for inputs' };
 
-  // Short-stack preflop: use Nash push/fold tables instead of equity heuristic
-  if (validHoleCards.length === 2 && validBoardCards.length === 0 && stackBBs <= 20) {
+  // ── Recommendation: CFR > push/fold > heuristic ───────────────────────────
+  let recommendation = { action: 'CHECK', color: 'bg-zinc-600', text: 'Waiting for inputs' };
+  let usingCFR = false;
+
+  if (cfrResult && !cfrResult.error) {
+    usingCFR = true;
+    const a = cfrResult.action;
+    recommendation = {
+      action: CFR_ACTION_DISPLAY[a] ?? a.toUpperCase(),
+      color:  CFR_ACTION_COLOR[a] ?? 'bg-zinc-600',
+      text:   `MCCFR · EV ${cfrResult.ev > 0 ? '+' : ''}${cfrResult.ev} · equity ${cfrResult.mc_equity}%`,
+    };
+  } else if (validHoleCards.length === 2 && validBoardCards.length === 0 && stackBBs <= 20) {
     const pfAdvice = getGTOPreflopAdvice(validHoleCards, position as Position, betToCall > 0, stackBBs);
     if (pfAdvice.action === 'RAISE') {
       recommendation = { action: 'PUSH ALL-IN', color: 'bg-amber-500', text: pfAdvice.reason };
@@ -100,7 +249,6 @@ export function HandAnalyzer() {
     }
   } else if (simResult) {
     const winProb = simResult.winProb;
-    
     if (betToCall === 0) {
       if (winProb > 0.6) recommendation = { action: 'RAISE', color: 'bg-emerald-600', text: 'Strong equity. Build the pot.' };
       else recommendation = { action: 'CHECK', color: 'bg-zinc-500', text: 'Check and see.' };
@@ -212,6 +360,15 @@ export function HandAnalyzer() {
                 className="bg-zinc-950 border-zinc-800 font-mono text-lg"
               />
             </div>
+            <div className="space-y-2">
+              <Label className="text-zinc-400 text-xs tracking-widest uppercase">My Stack ($)</Label>
+              <Input
+                type="number"
+                value={myStack}
+                onChange={e => setMyStack(Math.max(1, Number(e.target.value) || 1))}
+                className="bg-zinc-950 border-zinc-800 font-mono text-lg"
+              />
+            </div>
           </div>
         </Card>
       </div>
@@ -221,14 +378,43 @@ export function HandAnalyzer() {
         
         {/* MAIN DECISION BADGE */}
         <Card className="bg-zinc-900 border-zinc-800 overflow-hidden">
-          <div className={cn("p-6 flex flex-col items-center justify-center min-h-[140px] transition-colors duration-500", recommendation.color)}>
-            <div className="text-5xl font-black tracking-tight drop-shadow-sm mb-2">
-              {recommendation.action}
+          <div className={cn(
+            "p-6 flex flex-col items-center justify-center min-h-[140px] transition-colors duration-500",
+            recommendation.color,
+          )}>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="text-5xl font-black tracking-tight drop-shadow-sm">
+                {recommendation.action}
+              </div>
+              {isCFRLoading && (
+                <Loader2 className="w-6 h-6 animate-spin opacity-70" />
+              )}
             </div>
-            <div className="text-sm opacity-90 font-medium">
+            <div className="text-sm opacity-90 font-medium text-center">
               {recommendation.text}
             </div>
+            {usingCFR && (
+              <div className="mt-1 text-[11px] opacity-60 tracking-widest uppercase">
+                MCCFR · Python solver
+              </div>
+            )}
           </div>
+
+          {/* CFR frequencies bar — показываем только когда есть результат */}
+          {cfrResult && !cfrResult.error && Object.keys(cfrResult.frequencies).length > 1 && (
+            <div className="px-5 py-4 border-t border-zinc-800 bg-zinc-950/60">
+              <div className="text-zinc-500 text-[10px] tracking-widest uppercase mb-3">
+                Частоты действий (GTO mix)
+              </div>
+              <CfrFreqBar frequencies={cfrResult.frequencies} />
+              <div className="mt-3 flex items-center justify-between text-[11px] text-zinc-600">
+                <span>{cfrResult.iterations} итераций CFR · {cfrResult.elapsed_ms}ms</span>
+                {cfrResult.used_range && cfrResult.villain_range_pct != null && (
+                  <span>range vs range · виллейн ~{cfrResult.villain_range_pct}% рук</span>
+                )}
+              </div>
+            </div>
+          )}
         </Card>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -243,7 +429,6 @@ export function HandAnalyzer() {
                 {isSimulating && <Loader2 className="w-5 h-5 animate-spin text-zinc-500 mb-2" />}
               </div>
               
-              {/* Custom Gauge */}
               <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
                 <div 
                   className={cn(
@@ -321,14 +506,22 @@ export function HandAnalyzer() {
                   <span className="text-zinc-400">Required Equity:</span>
                   <span className="text-zinc-200">{formatProb(potOdds)}</span>
                 </div>
-                {simResult && betToCall > 0 && (
+                {/* CFR EV когда доступен, иначе — расчётный EV */}
+                {cfrResult && !cfrResult.error ? (
+                  <div className="flex justify-between mt-2 pt-2 border-t border-zinc-800">
+                    <span className="text-zinc-400">EV (MCCFR):</span>
+                    <span className={cn("font-bold", cfrResult.ev >= 0 ? "text-emerald-400" : "text-red-400")}>
+                      {cfrResult.ev >= 0 ? '+' : ''}{cfrResult.ev}
+                    </span>
+                  </div>
+                ) : simResult && betToCall > 0 ? (
                   <div className="flex justify-between mt-2 pt-2 border-t border-zinc-800">
                     <span className="text-zinc-400">Expected Value:</span>
                     <span className={cn("font-bold", simResult.winProb > potOdds ? "text-emerald-400" : "text-red-400")}>
                       {simResult.winProb > potOdds ? '+' : '-'}${Math.abs((simResult.winProb * (potSize + betToCall)) - betToCall).toFixed(2)}
                     </span>
                   </div>
-                )}
+                ) : null}
               </div>
             </div>
           </Card>
