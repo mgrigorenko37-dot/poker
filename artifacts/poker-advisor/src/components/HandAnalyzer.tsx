@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Loader2 } from 'lucide-react';
+import { Loader2, ChevronDown, ChevronUp } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 
@@ -118,6 +118,14 @@ export function HandAnalyzer() {
   const cfrAbortRef = useRef<AbortController | null>(null);
   const cfrTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Villain profile state
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [vpip, setVpip]               = useState(28);   // % рук, которые виллан входит в банк
+  const [pfr, setPfr]                 = useState(20);   // % рук, с которыми поднимает префлоп
+  const [af, setAf]                   = useState(2.5);  // Aggression Factor (бет+рейз / колл)
+  const [foldToCbet, setFoldToCbet]   = useState(55);  // % фолд на C-bet
+  const [cbet, setCbet]               = useState(65);  // % C-bet виллана
+
   const validHoleCards = holeCards.filter(Boolean) as CardType[];
   const validBoardCards = boardCards.filter(Boolean) as CardType[];
   const allUsedCards = [...validHoleCards, ...validBoardCards];
@@ -191,6 +199,13 @@ export function HandAnalyzer() {
           pot:           potSize > 0 ? potSize : 100,
           stack:         myStack > 0 ? myStack : 1000,
           cfrIterations: 150,
+          villainProfile: {
+            vpip:         vpip / 100,
+            pfr:          pfr / 100,
+            af,
+            fold_to_cbet: foldToCbet / 100,
+            cbet:         cbet / 100,
+          },
         }),
       })
         .then(r => r.json())
@@ -210,7 +225,7 @@ export function HandAnalyzer() {
       if (cfrTimerRef.current) clearTimeout(cfrTimerRef.current);
       if (cfrAbortRef.current) cfrAbortRef.current.abort();
     };
-  }, [JSON.stringify(validHoleCards), JSON.stringify(validBoardCards), potSize, myStack, stackBBs]);
+  }, [JSON.stringify(validHoleCards), JSON.stringify(validBoardCards), potSize, myStack, stackBBs, vpip, pfr, af, foldToCbet, cbet]);
 
   const updateHoleCard = (index: number, card: CardType | null) => {
     const newCards = [...holeCards];
@@ -370,6 +385,114 @@ export function HandAnalyzer() {
               />
             </div>
           </div>
+        </Card>
+
+        {/* VILLAIN PROFILE — collapsible */}
+        <Card className="bg-zinc-900 border-zinc-800 overflow-hidden">
+          <button
+            onClick={() => setIsProfileOpen(o => !o)}
+            className="w-full flex items-center justify-between px-5 py-3 hover:bg-zinc-800/50 transition-colors"
+          >
+            <span className="text-zinc-400 text-xs uppercase tracking-widest font-bold">Профиль оппонента</span>
+            {isProfileOpen
+              ? <ChevronUp className="w-4 h-4 text-zinc-500" />
+              : <ChevronDown className="w-4 h-4 text-zinc-500" />}
+          </button>
+
+          {isProfileOpen && (
+            <div className="px-5 pb-5 space-y-4 border-t border-zinc-800">
+              <p className="text-zinc-600 text-xs mt-3">
+                Используется CFR-солвером для node-locking — стратегия виллана подстраивается под его стиль.
+              </p>
+
+              {/* VPIP / PFR */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <div className="flex justify-between">
+                    <Label className="text-zinc-400 text-xs uppercase tracking-widest">VPIP</Label>
+                    <span className="text-zinc-300 text-xs font-mono">{vpip}%</span>
+                  </div>
+                  <input type="range" min={10} max={80} step={1} value={vpip}
+                    onChange={e => setVpip(Number(e.target.value))}
+                    className="w-full accent-emerald-500" />
+                  <div className="flex justify-between text-zinc-700 text-[10px]">
+                    <span>Тайт</span><span>Лус</span>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="flex justify-between">
+                    <Label className="text-zinc-400 text-xs uppercase tracking-widest">PFR</Label>
+                    <span className="text-zinc-300 text-xs font-mono">{pfr}%</span>
+                  </div>
+                  <input type="range" min={5} max={60} step={1} value={pfr}
+                    onChange={e => setPfr(Number(e.target.value))}
+                    className="w-full accent-emerald-500" />
+                  <div className="flex justify-between text-zinc-700 text-[10px]">
+                    <span>Пассив</span><span>Агресс</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* AF / Fold to C-bet */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <div className="flex justify-between">
+                    <Label className="text-zinc-400 text-xs uppercase tracking-widest">AF</Label>
+                    <span className="text-zinc-300 text-xs font-mono">{af.toFixed(1)}</span>
+                  </div>
+                  <input type="range" min={0.5} max={6} step={0.1} value={af}
+                    onChange={e => setAf(Number(e.target.value))}
+                    className="w-full accent-emerald-500" />
+                  <div className="flex justify-between text-zinc-700 text-[10px]">
+                    <span>Пассив</span><span>Агресс</span>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="flex justify-between">
+                    <Label className="text-zinc-400 text-xs uppercase tracking-widest">Fold to CB</Label>
+                    <span className="text-zinc-300 text-xs font-mono">{foldToCbet}%</span>
+                  </div>
+                  <input type="range" min={20} max={90} step={1} value={foldToCbet}
+                    onChange={e => setFoldToCbet(Number(e.target.value))}
+                    className="w-full accent-emerald-500" />
+                  <div className="flex justify-between text-zinc-700 text-[10px]">
+                    <span>Стейшен</span><span>Фолдер</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* C-bet frequency */}
+              <div className="space-y-1">
+                <div className="flex justify-between">
+                  <Label className="text-zinc-400 text-xs uppercase tracking-widest">C-bet %</Label>
+                  <span className="text-zinc-300 text-xs font-mono">{cbet}%</span>
+                </div>
+                <input type="range" min={20} max={90} step={1} value={cbet}
+                  onChange={e => setCbet(Number(e.target.value))}
+                  className="w-full accent-emerald-500" />
+                <div className="flex justify-between text-zinc-700 text-[10px]">
+                  <span>Редко</span><span>Часто</span>
+                </div>
+              </div>
+
+              {/* Quick presets */}
+              <div className="flex gap-2 flex-wrap pt-1">
+                {([
+                  { label: 'Рек',   vpip: 24, pfr: 18, af: 3.0, ftc: 55, cb: 60 },
+                  { label: 'Тайт',  vpip: 16, pfr: 13, af: 2.0, ftc: 65, cb: 50 },
+                  { label: 'Лус',   vpip: 40, pfr: 22, af: 2.5, ftc: 45, cb: 70 },
+                  { label: 'Манья', vpip: 55, pfr: 35, af: 4.5, ftc: 35, cb: 80 },
+                ] as const).map(p => (
+                  <button key={p.label}
+                    onClick={() => { setVpip(p.vpip); setPfr(p.pfr); setAf(p.af); setFoldToCbet(p.ftc); setCbet(p.cb); }}
+                    className="text-xs px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </Card>
       </div>
 
