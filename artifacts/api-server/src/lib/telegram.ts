@@ -12,6 +12,11 @@ import path from "node:path";
 const API_BASE = "https://api.telegram.org";
 const CONFIG_PATH = path.join(process.cwd(), "data", "telegram-config.json");
 
+// Accept both TELEGRAM_BOT_TOKEN and BOT_TOKEN (whichever is set)
+function getBotToken(): string | undefined {
+  return process.env.TELEGRAM_BOT_TOKEN ?? process.env.BOT_TOKEN;
+}
+
 function readChatId(): string | null {
   try {
     const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
@@ -27,11 +32,11 @@ function writeChatId(chatId: string): void {
 }
 
 export function isTelegramConfigured(): boolean {
-  return Boolean(process.env.TELEGRAM_BOT_TOKEN && readChatId());
+  return Boolean(getBotToken() && readChatId());
 }
 
 export async function sendTelegramMessage(text: string): Promise<void> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const token = getBotToken();
   const chatId = readChatId();
   if (!token || !chatId) return;
 
@@ -57,7 +62,7 @@ export async function sendTelegramMessage(text: string): Promise<void> {
 // One-time discovery: the user sends /start to their bot, then we call this to
 // find their chat_id from Telegram's getUpdates and persist it locally.
 export async function fetchLatestChatId(): Promise<{ chatId: string; username?: string } | null> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const token = getBotToken();
   if (!token) return null;
 
   const res = await fetch(`${API_BASE}/bot${token}/getUpdates?limit=5`);

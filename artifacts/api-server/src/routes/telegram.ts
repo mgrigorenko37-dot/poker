@@ -23,10 +23,10 @@ import {
 const router: IRouter = Router();
 
 router.post("/telegram/link", async (_req, res) => {
-  if (!process.env.TELEGRAM_BOT_TOKEN) {
+  if (!process.env.TELEGRAM_BOT_TOKEN && !process.env.BOT_TOKEN) {
     res.status(503).json({
       ok: false,
-      error: "TELEGRAM_BOT_TOKEN не задан в Secrets. Добавь его на Replit и перезапусти сервер.",
+      error: "Токен бота не задан. Добавь TELEGRAM_BOT_TOKEN или BOT_TOKEN в Secrets и перезапусти сервер.",
     });
     return;
   }
@@ -62,7 +62,7 @@ router.post("/telegram/test", async (_req, res) => {
 });
 
 router.get("/telegram/status", (_req, res) => {
-  const hasToken = Boolean(process.env.TELEGRAM_BOT_TOKEN);
+  const hasToken = Boolean(process.env.TELEGRAM_BOT_TOKEN ?? process.env.BOT_TOKEN);
   const configured = isTelegramConfigured();
   res.json({
     hasToken,
