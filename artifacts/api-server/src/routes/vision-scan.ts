@@ -8,6 +8,7 @@
  * Resets the hand state machine (called when ScreenScan session starts/stops).
  */
 
+import http from "node:http";
 import { Router, type IRouter } from "express";
 import { broadcastAnalysis } from "../lib/live-analysis";
 import { isTelegramConfigured, sendTelegramMessage } from "../lib/telegram";
@@ -20,10 +21,44 @@ import { narrowVillainRange } from "../lib/range-narrower";
 import { getOpponentSummary } from "../lib/opponent-profile";
 import { getSPRAdvice } from "../lib/spr-advice";
 import { getBoardTexture } from "../lib/board-texture";
+import { isCFRReady, getCFRPort } from "../lib/cfr-process";
 
 const router: IRouter = Router();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Вызов Python CFR-сервера с таймаутом 4 с. Возвращает null при ошибке. */
+async function callCFR(body: unknown): Promise<Record<string, unknown> | null> {
+  if (!isCFRReady()) return null;
+  return new Promise((resolve) => {
+    const payload = JSON.stringify(body);
+    const timer = setTimeout(() => { req.destroy(); resolve(null); }, 4_000);
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port: getCFRPort(),
+        path: "/solve",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (c) => { data += c; });
+        res.on("end", () => {
+          clearTimeout(timer);
+          try { resolve(JSON.parse(data) as Record<string, unknown>); }
+          catch { resolve(null); }
+        });
+      },
+    );
+    req.on("error", () => { clearTimeout(timer); resolve(null); });
+    req.write(payload);
+    req.end();
+  });
+}
 
 /**
  * Send Telegram if configured, tagged with the trigger reason for logging.
@@ -41,7 +76,7 @@ function fireTelegram(payload: Parameters<typeof buildTelegramText>[0], trigger:
 // ── /api/vision/scan-cards ────────────────────────────────────────────────────
 // Card data supplied by the browser YOLO detector — no AI call needed.
 // Runs the full GTO pipeline on pre-parsed card strings.
-router.post("/vision/scan-cards", (req, res) => {
+router.post("/vision/scan-cards", async (req, res) => {
   const {
     holeCards,
     boardCards = [],
@@ -116,6 +151,22 @@ router.post("/vision/scan-cards", (req, res) => {
   const sim          = runMonteCarloSim(hole, board, finalPlayers, 1200, narrowed.rangeKeys);
   const advice       = getFullAdvice(hole, board, finalPot, finalBet, finalPlayers, position, sim, 1.0, sprAdvice?.stackBBs ?? 100, "");
 
+  // ── MCCFR: постфлоп-спот (борд ≥ 3) — вызываем Python CFR-сервер ──────────
+  // Не блокируем основную логику — callCFR имеет 4с таймаут и возвращает null.
+  let cfrData: Record<string, unknown> | null = null;
+  if (!isPreflop && board.length >= 3) {
+    cfrData = await callCFR({
+      holeCards:      holeStrings,
+      boardCards:     validBoardStrings,
+      pot:            finalPot,
+      stack:          sprAdvice?.stackBBs ? sprAdvice.stackBBs * 10 : 300,
+      villainRange:   narrowed.rangeKeys.length > 0 ? narrowed.rangeKeys : undefined,
+      heroActsFirst:  position !== "SB" && position !== "BB",
+      mcIterations:   200,
+      cfrIterations:  150,
+    });
+  }
+
   const output: any = {
     ok: true,
     holeCards: holeStrings,
@@ -142,6 +193,7 @@ router.post("/vision/scan-cards", (req, res) => {
       heroConnectionNote: boardTexture.heroConnectionNote,
       heroStrategyNote: boardTexture.heroStrategyNote,
     } : null,
+    cfrData: cfrData ?? null,
     ts: Date.now(),
   };
 

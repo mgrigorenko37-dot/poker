@@ -21,6 +21,13 @@ import { detectCards, cropCanvas, loadYoloModel } from '@/lib/yolo-cards';
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Phase = 'idle' | 'requesting' | 'scanning';
 
+interface CfrData {
+  action: string;
+  frequencies: Record<string, number>;
+  ev: number;
+  equity: number;
+}
+
 interface ScanResult {
   holeCards: string[];
   boardCards: string[];
@@ -41,6 +48,7 @@ interface ScanResult {
   position: string;
   usedRangeVsRange: boolean;
   villainRangePct: number;
+  cfrData: CfrData | null;
   ts: number;
 }
 
@@ -511,6 +519,50 @@ export function ScreenScan() {
                 )}
               </div>
             )}
+
+            {/* CFR frequencies bar */}
+            {advice?.cfrData && (() => {
+              const CFR_COLORS: Record<string, string> = {
+                fold:   '#ef4444', check: '#71717a', call:  '#3b82f6',
+                bet33:  '#10b981', bet50: '#059669', bet75:  '#f59e0b',
+                bet100: '#f97316', allin: '#8b5cf6',
+              };
+              const freqs = advice.cfrData.frequencies;
+              const entries = Object.entries(freqs).filter(([, v]) => v > 0.01).sort(([, a], [, b]) => b - a);
+              const topAction = advice.cfrData.action;
+              return (
+                <div className="bg-zinc-900 border border-purple-800/40 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-purple-400 text-xs uppercase tracking-widest font-bold">MCCFR Mix</span>
+                    <span className="text-zinc-400 text-xs">
+                      EV <span className="text-purple-300 font-bold">{advice.cfrData.ev > 0 ? '+' : ''}{advice.cfrData.ev.toFixed(1)}</span>
+                      <span className="text-zinc-600 ml-2">eq {(advice.cfrData.equity * 100).toFixed(0)}%</span>
+                    </span>
+                  </div>
+                  {/* Segmented bar */}
+                  <div className="flex h-3 rounded-full overflow-hidden mb-2 gap-px bg-zinc-800">
+                    {entries.map(([action, freq]) => (
+                      <div
+                        key={action}
+                        style={{ width: `${freq * 100}%`, backgroundColor: CFR_COLORS[action] ?? '#6b7280' }}
+                        title={`${action}: ${(freq * 100).toFixed(0)}%`}
+                      />
+                    ))}
+                  </div>
+                  {/* Legend */}
+                  <div className="flex flex-wrap gap-x-3 gap-y-1">
+                    {entries.map(([action, freq]) => (
+                      <div key={action} className="flex items-center gap-1">
+                        <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: CFR_COLORS[action] ?? '#6b7280' }} />
+                        <span className={cn('text-xs', action === topAction ? 'text-zinc-100 font-bold' : 'text-zinc-500')}>
+                          {action} {(freq * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Win probability */}
             {advice && (
