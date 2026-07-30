@@ -1,13 +1,15 @@
 /**
  * yolo-cards.ts
  *
- * YOLOv8-nano card detection running entirely in the browser via onnxruntime-web.
+ * YOLOv8 card detection running entirely in the browser via onnxruntime-web.
  * The model detects all 52 card classes from a canvas frame and assigns them
  * to hole cards (bottom of frame) vs board cards (middle of frame).
  *
- * Model: playing_cards.onnx (YOLOv8n, trained on Roboflow Playing Cards dataset)
- * Input:  [1, 3, 640, 640] float32, RGB, normalized [0,1], letterboxed
- * Output: [1, 56, 8400]  — 4 bbox coords + 52 class scores per anchor
+ * Model: best.onnx (custom-trained YOLOv8, universal_poker_cards_fast)
+ * Input:  [1, 3, 768, 768] float32, RGB, normalized [0,1], letterboxed
+ * Output: [1, 56, 12096]  — 4 bbox coords + 52 class scores per anchor
+ *
+ * Fallback: playing_cards.onnx (YOLOv8n 640×640) used if best.onnx not found.
  */
 
 import * as ort from 'onnxruntime-web';
@@ -21,8 +23,17 @@ ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/di
 ort.env.wasm.numThreads = 1;
 
 // ── Constants ──────────────────────────────────────────────────────────────────
-const MODEL_URL = `${import.meta.env.BASE_URL}models/playing_cards.onnx`;
-const INPUT_SIZE = 640;
+// Primary: custom-trained 768×768 model. Fallback: original 640×640.
+const MODEL_URL_PRIMARY  = `${import.meta.env.BASE_URL}models/best.onnx`;
+const MODEL_URL_FALLBACK = `${import.meta.env.BASE_URL}models/playing_cards.onnx`;
+// Map: model URL → expected input spatial size. parseOutput reads the anchor
+// count from output.dims dynamically, so 12096 vs 8400 is handled automatically.
+const MODEL_INPUT_SIZES: Record<string, number> = {
+  [MODEL_URL_PRIMARY]:  768,
+  [MODEL_URL_FALLBACK]: 640,
+};
+// Effective input size — updated once the model finishes loading.
+let activeInputSize = 768;
 const CONF_THRESHOLD = 0.25;      // lowered: 0.45 was too strict for most poker room card designs
 const NMS_IOU_THRESHOLD = 0.45;
 const MAX_DETECTIONS = 7; // 2 hole + 5 board
@@ -62,22 +73,38 @@ const CLASS_TO_CARD: string[] = MODEL_CLASS_NAMES.map(toCardString);
 let session: ort.InferenceSession | null = null;
 let sessionPromise: Promise<ort.InferenceSession> | null = null;
 let loadError: Error | null = null;
+// Which model URL ended up loading (shown in debug panel)
+export let loadedModelUrl = '';
 
 export async function loadYoloModel(): Promise<ort.InferenceSession> {
   if (loadError) throw loadError;
   if (session) return session;
   if (!sessionPromise) {
-    sessionPromise = ort.InferenceSession.create(MODEL_URL, {
-      executionProviders: ['wasm'],
-      graphOptimizationLevel: 'all',
-    }).then(s => {
-      session = s;
-      return s;
-    }).catch(e => {
-      loadError = e;
+    sessionPromise = (async () => {
+      // Try primary (best.onnx 768×768) first; fall back to original 640×640.
+      const urls = [MODEL_URL_PRIMARY, MODEL_URL_FALLBACK];
+      let lastErr: unknown;
+      for (const url of urls) {
+        try {
+          const s = await ort.InferenceSession.create(url, {
+            executionProviders: ['wasm'],
+            graphOptimizationLevel: 'all',
+          });
+          session = s;
+          loadedModelUrl = url;
+          // Update active input size to match the loaded model
+          activeInputSize = MODEL_INPUT_SIZES[url] ?? 640;
+          console.log(`[yolo] loaded model: ${url} (input ${activeInputSize}×${activeInputSize})`);
+          return s;
+        } catch (e) {
+          console.warn(`[yolo] failed to load ${url}:`, e);
+          lastErr = e;
+        }
+      }
+      loadError = lastErr as Error;
       sessionPromise = null;
-      throw e;
-    });
+      throw lastErr;
+    })();
   }
   return sessionPromise;
 }
@@ -106,23 +133,24 @@ function preprocessCanvas(src: HTMLCanvasElement): {
   scaledW: number;
   scaledH: number;
 } {
+  const S = activeInputSize;  // 768 for best.onnx, 640 for fallback
   const W = src.width, H = src.height;
-  const scale = Math.min(INPUT_SIZE / W, INPUT_SIZE / H);
+  const scale = Math.min(S / W, S / H);
   const scaledW = Math.round(W * scale);
   const scaledH = Math.round(H * scale);
-  const padX = (INPUT_SIZE - scaledW) / 2;
-  const padY = (INPUT_SIZE - scaledH) / 2;
+  const padX = (S - scaledW) / 2;
+  const padY = (S - scaledH) / 2;
 
   const tmp = document.createElement('canvas');
-  tmp.width = INPUT_SIZE;
-  tmp.height = INPUT_SIZE;
+  tmp.width = S;
+  tmp.height = S;
   const ctx = tmp.getContext('2d')!;
   ctx.fillStyle = '#808080';
-  ctx.fillRect(0, 0, INPUT_SIZE, INPUT_SIZE);
+  ctx.fillRect(0, 0, S, S);
   ctx.drawImage(src, padX, padY, scaledW, scaledH);
 
-  const { data } = ctx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE);
-  const n = INPUT_SIZE * INPUT_SIZE;
+  const { data } = ctx.getImageData(0, 0, S, S);
+  const n = S * S;
   const float32 = new Float32Array(3 * n);
   for (let i = 0; i < n; i++) {
     float32[i]         = data[i * 4]     / 255; // R
@@ -131,7 +159,7 @@ function preprocessCanvas(src: HTMLCanvasElement): {
   }
 
   return {
-    tensor: new ort.Tensor('float32', float32, [1, 3, INPUT_SIZE, INPUT_SIZE]),
+    tensor: new ort.Tensor('float32', float32, [1, 3, S, S]),
     padX,
     padY,
     scaledW,
