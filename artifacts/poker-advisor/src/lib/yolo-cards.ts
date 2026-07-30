@@ -34,7 +34,7 @@ const MODEL_INPUT_SIZES: Record<string, number> = {
 };
 // Effective input size — updated once the model finishes loading.
 let activeInputSize = 768;
-const CONF_THRESHOLD = 0.25;      // lowered: 0.45 was too strict for most poker room card designs
+const CONF_THRESHOLD = 0.15;      // lowered from 0.25: mobile games use stylized card art that scores lower
 const NMS_IOU_THRESHOLD = 0.45;
 const MAX_DETECTIONS = 7; // 2 hole + 5 board
 
@@ -75,6 +75,8 @@ let sessionPromise: Promise<ort.InferenceSession> | null = null;
 let loadError: Error | null = null;
 // Which model URL ended up loading (shown in debug panel)
 export let loadedModelUrl = '';
+// Export model URL constants for debug panel
+export { MODEL_URL_PRIMARY, MODEL_URL_FALLBACK };
 
 export async function loadYoloModel(): Promise<ort.InferenceSession> {
   if (loadError) throw loadError;
@@ -107,6 +109,28 @@ export async function loadYoloModel(): Promise<ort.InferenceSession> {
     })();
   }
   return sessionPromise;
+}
+
+/**
+ * Force-load a specific model URL, replacing the current session.
+ * Used by the debug panel to let the user try the fallback model.
+ */
+export async function switchYoloModel(url: string): Promise<void> {
+  // Tear down existing session
+  session = null;
+  sessionPromise = null;
+  loadError = null;
+  loadedModelUrl = '';
+  activeInputSize = MODEL_INPUT_SIZES[url] ?? 640;
+
+  const s = await ort.InferenceSession.create(url, {
+    executionProviders: ['wasm'],
+    graphOptimizationLevel: 'all',
+  });
+  session = s;
+  loadedModelUrl = url;
+  activeInputSize = MODEL_INPUT_SIZES[url] ?? 640;
+  console.log(`[yolo] switched to model: ${url} (input ${activeInputSize}×${activeInputSize})`);
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -248,27 +272,33 @@ function nms(detections: Detection[]): Detection[] {
 }
 
 // ── Layout heuristic ───────────────────────────────────────────────────────────
-// Hole cards sit at the BOTTOM of the cropped table frame; board cards are in
-// the middle. After a fold the hole cards disappear, leaving only board cards.
+// Hole cards sit at the BOTTOM of the frame; board cards are in the middle.
 //
-// Old approach (blindly take bottom-2) broke on fold: board cards that happen
-// to be lowest got misassigned as hole cards.
+// Primary strategy: gap-based (find the biggest vertical jump in the sorted list;
+// if it falls between position 1 and 2, bottom-2 = hole cards).
+// This works regardless of absolute cy values — it only needs relative positions,
+// so it handles full-frame captures, windowed captures, and mobile aspect ratios.
 //
-// New approach — gap-based:
-//   1. Sort all detections by cy descending (bottom of frame first).
-//   2. Look for a significant vertical gap between position [1] and [2].
-//      A gap ≥ 15 % of the frame means there's a clear separation between
-//      two groups (hole cards below, board cards above).
-//   3. The bottom group must have cy ≥ 0.50 (actually in the lower half of
-//      the frame) — prevents assigning middle-table board cards as hole cards.
-//   4. With only 2 cards visible: hole cards only if cy ≥ 0.50.
-//   5. No valid hole assignment → return empty holeCards (fold / between hands).
+// Secondary strategy: relative-median fallback.
+// If no clear gap is found, check whether the bottom-2 cards are meaningfully
+// lower than the median cy of all detections. A small margin (2% of frame) is
+// enough to tell hole cards from a tight cluster of board cards.
 //
-// Constants are intentionally conservative so a mis-deal false-positive is
-// much less likely than a missed detection — better to under-detect than to
-// ghost the wrong hand into Telegram.
-const MIN_HOLE_GAP = 0.10;   // minimum cy gap to separate hole from board (lowered from 0.15)
-const MIN_HOLE_CY  = 0.50;   // hole cards must be in the bottom half of the crop
+// Showdown note: at showdown other players' cards appear near the hero's at the
+// bottom of the frame. When multiple cards are in the hole zone, pick the pair
+// with the highest holeScore (bottom + rightmost) — that's the hero position in
+// most mobile poker apps (Pokerist, WPC, GGPoker mobile, PokerStars mobile).
+const MIN_HOLE_GAP      = 0.06;  // minimum cy gap to separate hole from board
+const MIN_RELATIVE_DIFF = 0.02;  // relative fallback: bottom-2 must be > median by this margin
+
+/**
+ * Score used to rank candidate "hole card" pairs at showdown.
+ * Higher score = more likely to be the hero's hole cards.
+ * Prioritises: (1) low in frame, (2) right side of frame (mobile hero position).
+ */
+function holeScore(d: Detection): number {
+  return d.cy * 0.7 + d.cx * 0.3;
+}
 
 function assignCards(detections: Detection[]): { holeCards: string[]; boardCards: string[] } {
   // Deduplicate: keep highest-confidence detection per card label
@@ -281,51 +311,90 @@ function assignCards(detections: Detection[]): { holeCards: string[]; boardCards
 
   if (unique.length < 2) return { holeCards: [], boardCards: [] };
 
-  // Sort by cy descending (bottom of frame first, i.e. highest cy = index 0)
+  // Sort by cy descending (bottom of frame first = highest cy at index 0)
   unique.sort((a, b) => b.cy - a.cy);
 
   if (unique.length === 2) {
-    // Only 2 cards: treat as hole cards only when they're in the bottom half
-    if (unique[0].cy >= MIN_HOLE_CY) {
-      return { holeCards: unique.map(d => d.label), boardCards: [] };
+    // Only 2 cards visible — preflop before board, or fold
+    return { holeCards: unique.map(d => d.label), boardCards: [] };
+  }
+
+  // ── Primary: gap-based ────────────────────────────────────────────────────
+  // Find the largest vertical gap in the sorted sequence.
+  let maxGap = 0, maxGapIdx = 1;
+  for (let i = 1; i < unique.length; i++) {
+    const gap = unique[i - 1].cy - unique[i].cy;
+    if (gap > maxGap) { maxGap = gap; maxGapIdx = i; }
+  }
+
+  if (maxGap >= MIN_HOLE_GAP && maxGapIdx === 2) {
+    // Biggest gap is between position 1 and 2 → bottom 2 are hole cards
+    return {
+      holeCards:  unique.slice(0, 2).sort((a, b) => a.cx - b.cx).map(d => d.label),
+      boardCards: unique.slice(2).sort((a, b) => a.cx - b.cx).map(d => d.label),
+    };
+  }
+
+  if (maxGap >= MIN_HOLE_GAP && maxGapIdx === 1) {
+    // Biggest gap between 0 and 1 — one isolated bottom card (can't be a full hole pair)
+    // Could be a showdown or misdetection. Check if we have ≥ 2 cards below the gap
+    // by looking for the next significant gap starting from 2.
+    // Fall through to secondary strategy for now.
+  }
+
+  // ── Secondary: absolute zone split ───────────────────────────────────────
+  // Use a dynamic threshold: the midpoint between the 2nd and 3rd card cy.
+  // This adapts to whatever vertical range the cards occupy in the frame.
+  if (unique.length >= 3) {
+    const dynamicThreshold = (unique[1].cy + unique[2].cy) / 2;
+    const inHoleZone  = unique.filter(d => d.cy > dynamicThreshold);
+    const inBoardZone = unique.filter(d => d.cy <= dynamicThreshold);
+
+    if (inHoleZone.length >= 2 && inBoardZone.length >= 1) {
+      // Showdown-aware: pick best-scoring pair from hole zone
+      if (inHoleZone.length === 2) {
+        return {
+          holeCards:  inHoleZone.sort((a, b) => a.cx - b.cx).map(d => d.label),
+          boardCards: inBoardZone.sort((a, b) => a.cx - b.cx).map(d => d.label),
+        };
+      }
+      // 3+ in hole zone (showdown with multiple hands visible) — pick best pair
+      let bestPair: [Detection, Detection] | null = null;
+      let bestPairScore = -1;
+      for (let i = 0; i < inHoleZone.length; i++) {
+        for (let j = i + 1; j < inHoleZone.length; j++) {
+          const score = holeScore(inHoleZone[i]) + holeScore(inHoleZone[j]);
+          if (score > bestPairScore) {
+            bestPairScore = score;
+            bestPair = [inHoleZone[i], inHoleZone[j]];
+          }
+        }
+      }
+      const holeSet = new Set(bestPair!.map(d => d.label));
+      const board = unique.filter(d => !holeSet.has(d.label)).sort((a, b) => a.cx - b.cx);
+      return {
+        holeCards:  bestPair!.sort((a, b) => a.cx - b.cx).map(d => d.label),
+        boardCards: board.map(d => d.label),
+      };
     }
-    // Too high up → board-only, no hole cards (folded)
-    return { holeCards: [], boardCards: unique.sort((a, b) => a.cx - b.cx).map(d => d.label) };
   }
 
-  // 3+ cards: primary — gap-based detection
-  const gap = unique[1].cy - unique[2].cy;
-  const avgHoleCy = (unique[0].cy + unique[1].cy) / 2;
-
-  if (gap >= MIN_HOLE_GAP && avgHoleCy >= MIN_HOLE_CY) {
-    // Clear separation: bottom 2 = hole cards, rest = board (sorted left→right)
-    return {
-      holeCards: [unique[0].label, unique[1].label],
-      boardCards: unique.slice(2, 7).sort((a, b) => a.cx - b.cx).map(d => d.label),
-    };
+  // ── Tertiary: relative-median fallback ────────────────────────────────────
+  // All cards at similar heights (no clear zone split). Use the bottom-2 as
+  // hole cards if they're at least MIN_RELATIVE_DIFF below the median.
+  if (unique.length >= 3) {
+    const medianCy    = unique[Math.floor(unique.length / 2)].cy;
+    const bottom2Avg  = (unique[0].cy + unique[1].cy) / 2;
+    if (bottom2Avg > medianCy + MIN_RELATIVE_DIFF) {
+      return {
+        holeCards:  unique.slice(0, 2).sort((a, b) => a.cx - b.cx).map(d => d.label),
+        boardCards: unique.slice(2).sort((a, b) => a.cx - b.cx).map(d => d.label),
+      };
+    }
   }
 
-  // Fallback: no clear vertical gap — split by MIN_HOLE_CY zone.
-  // This handles table layouts where hole and board are closer together than
-  // MIN_HOLE_GAP, and also avoids the old bug of returning empty boardCards
-  // (which triggered false fold detection on the flop).
-  const inHoleZone  = unique.filter(d => d.cy >= MIN_HOLE_CY);  // bottom half
-  const inBoardZone = unique.filter(d => d.cy <  MIN_HOLE_CY);  // middle/top
-
-  if (inHoleZone.length >= 2 && inBoardZone.length > 0) {
-    // Some cards clearly in hole zone, others in board zone → assign by zone
-    const hole  = inHoleZone.slice(0, 2); // bottom-most 2 in hole zone
-    const board = [...inHoleZone.slice(2), ...inBoardZone].sort((a, b) => a.cx - b.cx);
-    return {
-      holeCards:  hole.map(d => d.label),
-      boardCards: board.map(d => d.label),
-    };
-  }
-
-  // All cards in same vertical zone — can't reliably distinguish hole from board.
-  // Return everything as board cards (player folded or cards grouped tightly on table).
-  // Do NOT return empty boardCards here — that was the old bug that caused false folds
-  // during flop animations when the gap check transiently failed.
+  // All cards truly at the same height — fold / between hands / animation frame.
+  // Return as board cards only (NOT empty) to avoid false fold detection.
   return {
     holeCards:  [],
     boardCards: unique.sort((a, b) => a.cx - b.cx).map(d => d.label),
@@ -362,6 +431,12 @@ export async function detectCards(canvas: HTMLCanvasElement): Promise<YoloCardRe
 
   const raw = parseOutput(output, padX, padY, scaledW, scaledH);
   const detections = nms(raw);
+
+  // Debug: always log detection count and positions so layout issues are visible
+  console.debug(
+    `[yolo] raw=${raw.length} after-nms=${detections.length}`,
+    detections.map(d => `${d.label}@${(d.confidence * 100).toFixed(0)}%(cy=${d.cy.toFixed(2)})`).join(' '),
+  );
 
   // Need at least 2 detections to say anything meaningful
   if (detections.length < 2) return null;

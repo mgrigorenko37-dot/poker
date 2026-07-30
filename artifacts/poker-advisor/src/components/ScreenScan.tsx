@@ -16,7 +16,7 @@ import { parseCard, type Card } from '@/lib/poker';
 import type { Position } from '@/lib/poker-gto';
 import { TelegramSetup } from '@/components/TelegramSetup';
 import { CardPicker } from '@/components/CardPicker';
-import { detectCards, cropCanvas, loadYoloModel } from '@/lib/yolo-cards';
+import { detectCards, cropCanvas, loadYoloModel, switchYoloModel, loadedModelUrl, MODEL_URL_PRIMARY, MODEL_URL_FALLBACK, type Detection } from '@/lib/yolo-cards';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Phase = 'idle' | 'requesting' | 'scanning';
@@ -88,7 +88,8 @@ function findTableBounds(
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i+1], b = data[i+2];
     // Green felt: G dominant, moderate luminance, not too bright (avoid HUD/UI)
-    const isGreen = g > 55 && g > r * 1.2 && g > b * 1.05 && r < 200 && b < 200 && g < 240;
+    // Broad thresholds to handle dark-green, teal-green, and mobile-game felt variants
+    const isGreen = g > 45 && g > r * 1.1 && g > b * 1.0 && r < 220 && b < 200 && g < 240;
     if (isGreen) {
       const px = (i >> 2) % sw;
       const py = (i >> 2) / sw | 0;
@@ -98,8 +99,9 @@ function findTableBounds(
     }
   }
 
-  // Need at least 5% green pixels to call it a table
-  if (count < sw * sh * 0.05) return null;
+  // Need at least 2% green pixels (reduced from 5% — handles partial table captures
+  // and windowed-mode where the game occupies only part of the shared screen)
+  if (count < sw * sh * 0.02) return null;
 
   const pad = Math.round(30 / scale);
   return {
@@ -138,6 +140,16 @@ export function ScreenScan() {
   const [lastScan, setLastScan]       = useState<string | null>(null);
   const [scanCount, setScanCount]     = useState(0);
   const [tableFound, setTableFound]   = useState<boolean | null>(null);
+  // Debug panel — toggled by user to diagnose detection issues
+  const [showDebug, setShowDebug]     = useState(false);
+  const [yoloDebug, setYoloDebug]     = useState<{
+    detected: Detection[];
+    rawCount: number;
+    tableW: number;
+    tableH: number;
+  } | null>(null);
+  const [activeModel, setActiveModel] = useState<string>(MODEL_URL_PRIMARY);
+  const [switching, setSwitching]     = useState(false);
 
   // Game params — user can override, or let Gemini read them from screen
   const [position, setPosition]       = useState<Position>('BTN');
@@ -189,8 +201,22 @@ export function ScreenScan() {
   const [modelError, setModelError] = useState<string | null>(null);
   useEffect(() => {
     loadYoloModel()
-      .then(() => setModelReady(true))
+      .then(() => { setModelReady(true); setActiveModel(loadedModelUrl); })
       .catch(e => setModelError(e?.message ?? 'Ошибка загрузки YOLO'));
+  }, []);
+
+  const handleSwitchModel = useCallback(async (url: string) => {
+    setSwitching(true);
+    setModelError(null);
+    try {
+      await switchYoloModel(url);
+      setActiveModel(url);
+      setYoloDebug(null);
+    } catch (e: any) {
+      setModelError(e?.message ?? 'Ошибка переключения модели');
+    } finally {
+      setSwitching(false);
+    }
   }, []);
 
   // ── Full scan: capture frame → YOLO locally → GTO on server ───────────────
@@ -223,6 +249,18 @@ export function ScreenScan() {
     try {
       // ── Step 1: local YOLO card detection (~50-100 ms) ──────────────────
       const yoloResult = await detectCards(yoloCanvas);
+
+      // Update debug panel with latest raw detections
+      if (yoloResult) {
+        setYoloDebug({
+          detected: yoloResult.allDetections,
+          rawCount: yoloResult.allDetections.length,
+          tableW: yoloCanvas.width,
+          tableH: yoloCanvas.height,
+        });
+      } else {
+        setYoloDebug(prev => prev ? { ...prev, detected: [], rawCount: 0 } : null);
+      }
 
       // ── Fold detection ───────────────────────────────────────────────────
       // If YOLO found cards but no hole cards → player may have folded.
@@ -481,9 +519,22 @@ export function ScreenScan() {
                 {analyzing ? 'Анализирую…' : tableFound === false ? '⚠ Стол не найден' : `Сканирую • ${scanCount} раздач`}
               </span>
             </div>
-            <button onClick={stopAll} className="text-zinc-600 hover:text-zinc-400 text-xs transition-colors">
-              ✕ Стоп
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowDebug(v => !v)}
+                className={cn(
+                  'text-xs px-2 py-0.5 rounded border transition-colors',
+                  showDebug
+                    ? 'border-purple-600 text-purple-300 bg-purple-900/30'
+                    : 'border-zinc-700 text-zinc-500 hover:text-zinc-300'
+                )}
+              >
+                👁 Дебаг
+              </button>
+              <button onClick={stopAll} className="text-zinc-600 hover:text-zinc-400 text-xs transition-colors">
+                ✕ Стоп
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
@@ -493,6 +544,83 @@ export function ScreenScan() {
               <div className="bg-amber-950/40 border border-amber-800/50 rounded-lg p-3 text-sm text-amber-400">
                 <p className="font-bold mb-1">⚠ Зелёный стол не обнаружен</p>
                 <p className="text-amber-600 text-xs">Убедись что окно с покером видно на экране. Отправляю весь кадр — анализ продолжается.</p>
+              </div>
+            )}
+
+            {/* ── Debug panel — shows raw YOLO detections + model switcher ── */}
+            {showDebug && (
+              <div className="bg-purple-950/40 border border-purple-800/50 rounded-lg p-3 text-xs space-y-2">
+                <p className="text-purple-400 font-bold uppercase tracking-widest">👁 YOLO Debug</p>
+
+                {/* Active model + switcher */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-zinc-500">Модель:</span>
+                  <button
+                    onClick={() => handleSwitchModel(MODEL_URL_PRIMARY)}
+                    disabled={switching}
+                    className={cn(
+                      'px-2 py-0.5 rounded border text-[11px] font-mono transition-colors',
+                      activeModel === MODEL_URL_PRIMARY
+                        ? 'border-purple-500 text-purple-200 bg-purple-900/50'
+                        : 'border-zinc-700 text-zinc-500 hover:text-zinc-300'
+                    )}
+                  >
+                    best.onnx (768px)
+                  </button>
+                  <button
+                    onClick={() => handleSwitchModel(MODEL_URL_FALLBACK)}
+                    disabled={switching}
+                    className={cn(
+                      'px-2 py-0.5 rounded border text-[11px] font-mono transition-colors',
+                      activeModel === MODEL_URL_FALLBACK
+                        ? 'border-purple-500 text-purple-200 bg-purple-900/50'
+                        : 'border-zinc-700 text-zinc-500 hover:text-zinc-300'
+                    )}
+                  >
+                    playing_cards.onnx (640px)
+                  </button>
+                  {switching && <span className="text-zinc-500 animate-pulse">загрузка…</span>}
+                </div>
+
+                {modelError && <p className="text-red-400">{modelError}</p>}
+
+                {yoloDebug ? (
+                  <>
+                    <div className="flex gap-3 text-zinc-400 flex-wrap">
+                      <span>Карт найдено: <span className="text-purple-300 font-bold">{yoloDebug.rawCount}</span></span>
+                      <span>Кроп стола: <span className="text-zinc-300">{yoloDebug.tableW}×{yoloDebug.tableH}px</span></span>
+                      <span>Стол: <span className={tableFound ? 'text-emerald-400' : 'text-amber-400'}>{tableFound ? '✓ обнаружен' : '⚠ не найден (весь кадр)'}</span></span>
+                    </div>
+                    {yoloDebug.detected.length > 0 ? (
+                      <>
+                        <div className="flex flex-wrap gap-1.5 mt-1">
+                          {yoloDebug.detected.map((d, i) => (
+                            <span
+                              key={i}
+                              className={cn(
+                                'px-1.5 py-0.5 rounded font-mono font-bold border',
+                                d.label.endsWith('h') || d.label.endsWith('d')
+                                  ? 'border-red-800/60 text-red-300 bg-red-950/30'
+                                  : 'border-zinc-700 text-zinc-300 bg-zinc-800/50'
+                              )}
+                            >
+                              {d.label} <span className="text-zinc-500">{(d.confidence * 100).toFixed(0)}%</span>
+                              <span className="text-zinc-600 text-[10px] ml-1">cy={d.cy.toFixed(2)}</span>
+                            </span>
+                          ))}
+                        </div>
+                        <p className="text-zinc-600 italic">
+                          Если карты неверные — попробуй другую модель или исправь вручную (тапни карту ниже)
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-amber-400">⚠ Ни одной карты не обнаружено — убедись что стол виден на экране</p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-zinc-500">Ожидаю первое сканирование…</p>
+                )}
+                <p className="text-zinc-600 italic">Порог: 15% · Консоль браузера: raw/nms counts</p>
               </div>
             )}
 
