@@ -2,6 +2,7 @@ import http from "http";
 import app from "./app";
 import { logger } from "./lib/logger";
 import { initWebSocketServer } from "./lib/live-analysis";
+import { startCFRServer } from "./lib/cfr-process";
 
 const rawPort = process.env["PORT"];
 
@@ -20,6 +21,7 @@ if (Number.isNaN(port) || port <= 0) {
 const server = http.createServer(app);
 
 initWebSocketServer(server);
+startCFRServer();
 
 server.listen(port, (err?: Error) => {
   if (err) {
