@@ -4,7 +4,7 @@
  * Структура сообщения:
  *
  *   🔺 RAISE  2.5BB          ← главное, жирно, сразу
- *   Win 67%  ·  пот-оддс 24%  ← математика решения
+ *   Equity 67%  ·  пот-оддс 24%  ← математика решения
  *   A♥ K♦  ·  J♥ 4♠ 2♣  ·  BTN 4p  ← контекст
  *   🟡 SPR 3.2 — топ-пара = шов      ← одна строка, самый важный довод
  *   📊 TAG(8р) · VPIP20/PFR16 · AF2.4 · ⚡ атакуй его чек
@@ -140,7 +140,7 @@ export function buildTelegramText(body: {
       drawStr = `  ·  gs ${d.totalOuts}аут`;
     }
   }
-  const line2 = `Win ${winPct}%${oddsStr}${drawStr}`;
+  const line2 = `Equity ${winPct}%${oddsStr}${drawStr}`;
 
   // ── Строка 3: карты + позиция (контекст) ─────────────────────────────────
   const holeStr    = body.holeCards.map(fmtCard).join(" ");

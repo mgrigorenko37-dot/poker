@@ -76,6 +76,7 @@
   },
   "dependencies": {
     "onnxruntime-web": "^1.27.0",
-    "tesseract.js": "^7.0.0"
+    "tesseract.js": "^7.0.0",
+    "@workspace/poker-engine": "workspace:*"
   }
 }

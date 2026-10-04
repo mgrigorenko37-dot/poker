@@ -341,10 +341,18 @@ export function ScreenScan() {
         }),
       });
 
-      if (!res.ok) return;
-      let data: any;
-      try { data = await res.json(); } catch { return; }
-      if (!data.ok) return;
+      if (!res.ok) {
+        setResult(null);
+        setError('Не удалось подтвердить состояние стола. Проверьте карты и число игроков.');
+        return;
+      }
+      const data: any = await res.json();
+      if (!data.ok) {
+        setResult(null);
+        setError('Карты не подтверждены. Ожидаем следующий кадр.');
+        return;
+      }
+      setError(null);
 
       const newResult = data as ScanResult;
       setResult(newResult);
@@ -367,6 +375,8 @@ export function ScreenScan() {
       setHoleStrs(newResult.holeCards);
       setBoardStrs(newResult.boardCards);
     } catch (err: any) {
+      setResult(null);
+      setError('Сканирование прервано. Последний расчёт скрыт до подтверждения нового кадра.');
       console.warn('yolo/scan-cards error:', err?.message);
     } finally {
       busyRef.current = Math.max(0, busyRef.current - 1);
@@ -382,6 +392,10 @@ export function ScreenScan() {
   // Adaptive threshold: cards unknown → 1.5 % (catch deal); cards known → 4 %
   // (ignore chip animations, timer bar, bet amounts updating mid-action).
   const startCapture = useCallback(async () => {
+    if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
+      setError('Этот браузер не поддерживает захват экрана. На телефоне используйте калькулятор или эфир; для захвата Telegram нужен Android-клиент.');
+      return;
+    }
     setError(null);
     setPhase('requesting');
     // Reset server-side hand state machine before new session
@@ -454,6 +468,7 @@ export function ScreenScan() {
     <div className="flex flex-col h-full">
       {/* Hidden video element for screen capture */}
       <video ref={videoRef} style={{ display: 'none' }} playsInline muted />
+      {error && <p role="alert" className="border-b border-red-900/50 bg-red-950/20 px-4 py-3 text-center text-sm text-red-300">{error}</p>}
 
       {/* ── IDLE ── */}
       {phase === 'idle' && (
@@ -464,9 +479,9 @@ export function ScreenScan() {
           <div>
             <h2 className="text-zinc-100 text-lg font-bold mb-2">Авто-сканирование</h2>
             <p className="text-zinc-500 text-sm leading-relaxed max-w-xs">
-              Запусти захват экрана — YOLOv8 найдёт карты прямо в браузере,
-              посчитает эквити и пришлёт совет в Telegram.
-              Никакой ручной калибровки. Никаких API-ключей.
+              Захват окна на компьютере и распознавание карт в браузере.
+              Проверьте распознанные карты и укажите игроков, оставшихся в раздаче.
+              Поддержка графики конкретного приложения требует проверки.
             </p>
           </div>
 
@@ -490,9 +505,6 @@ export function ScreenScan() {
           >
             {modelReady ? '▶ Начать сканирование' : '⏳ Ожидание модели…'}
           </button>
-          {error && (
-            <p className="text-red-400 text-sm px-4">{error}</p>
-          )}
           <TelegramSetup />
         </div>
       )}
@@ -696,7 +708,7 @@ export function ScreenScan() {
             {advice && (
               <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-zinc-500 text-xs uppercase tracking-widest">Win Prob</span>
+                  <span className="text-zinc-500 text-xs uppercase tracking-widest">Доля банка · equity</span>
                   <span className={cn('text-xl font-black',
                     advice.equity > 0.6 ? 'text-emerald-400' :
                     advice.equity > 0.4 ? 'text-amber-400' : 'text-red-400'

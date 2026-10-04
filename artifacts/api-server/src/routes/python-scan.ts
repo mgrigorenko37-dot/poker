@@ -56,6 +56,7 @@ function buildResult(raw: {
     raw.position,
     sim,
     raw.villainAggression,
+    100,
     raw.aggressorPosition,
   );
 

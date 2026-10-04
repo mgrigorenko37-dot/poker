@@ -220,6 +220,7 @@ const advice = getFullAdvice(
   POSITION,
   sim,
   1.0,
+  HERO_STACK / BB_SIZE,
   '',
 );
 

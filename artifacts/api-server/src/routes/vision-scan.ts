@@ -86,7 +86,7 @@ router.post("/vision/scan-cards", async (req, res) => {
     position = "BTN",
     lastAction = null,
     minConfidence = 1.0,   // minimum YOLO detection confidence across all detected cards
-  } = req.body;
+  } = req.body ?? {};
 
   // ── Confidence gate ───────────────────────────────────────────────────────
   // Below this threshold the model is too unsure — run analysis for the UI but
@@ -99,45 +99,42 @@ router.post("/vision/scan-cards", async (req, res) => {
     return;
   }
 
-  const holeStrings = holeCards as string[];
-  const boardStrings = (boardCards as string[]);
-
-  // ── Board count validation ────────────────────────────────────────────────
-  // Texas Hold'em only ever has 0 (preflop), 3 (flop), 4 (turn), or 5 (river)
-  // community cards. A count of 1 or 2 means YOLO caught the animation mid-deal.
-  // We still run analysis for the UI (don't block the response), but mark it so
-  // Telegram is suppressed — bad board state must never fire a push notification.
-  const boardCountSuspect = !isValidBoardCount(boardStrings.length);
-  if (boardCountSuspect) {
-    logger.warn({ boardCount: boardStrings.length }, "scan-cards: suspect board count — analysis runs but Telegram suppressed");
-  }
-
-  // ── Hole ∩ board duplicate check ─────────────────────────────────────────
-  // A card cannot appear in both hero's hand and the community cards.
-  // If YOLO assigned the same card to both zones the detection is corrupt.
-  const holeLower  = new Set(holeStrings.map(s => s.toLowerCase()));
-  const boardLower = boardStrings.map(s => s.toLowerCase());
-  const hasDup     = boardLower.some(s => holeLower.has(s));
-  if (hasDup) {
-    logger.warn({ holeStrings, boardStrings }, "scan-cards: duplicate card in hole+board, ignoring");
-    res.json({ ok: false, error: "duplicate card in hole and board" });
+  if (!holeCards.every(c => typeof c === 'string') || !Array.isArray(boardCards) ||
+      !boardCards.every(c => typeof c === 'string') || !isValidBoardCount(boardCards.length)) {
+    res.status(400).json({ ok: false, error: 'Cards must be strings; board must contain 0, 3, 4 or 5 cards' });
     return;
   }
+  const holeStrings = holeCards as string[];
+  const boardStrings = (boardCards as string[]);
 
   let hole;
   try {
     hole = holeStrings.map(parseCard);
   } catch (e: any) {
-    res.json({ ok: false, error: `Invalid hole card: ${e.message}` });
+    res.status(400).json({ ok: false, error: `Invalid hole card: ${e.message}` });
     return;
   }
 
   const validBoardStrings: string[] = [];
   const board: ReturnType<typeof parseCard>[] = [];
   for (const s of boardStrings) {
-    try { board.push(parseCard(s)); validBoardStrings.push(s); } catch { /* skip */ }
+    try { board.push(parseCard(s)); validBoardStrings.push(s); } catch {
+      res.status(400).json({ ok: false, error: 'Invalid board card' });
+      return;
+    }
   }
 
+  const knownKeys = [...hole, ...board].map(c => `${c.rank}${c.suit}`);
+  if (new Set(knownKeys).size !== knownKeys.length || !Number.isInteger(players) || players < 2 || players > 9) {
+    res.status(400).json({ ok: false, error: 'Duplicate cards or invalid player count' });
+    return;
+  }
+  if ([clientPot, clientBet].some(v => v !== undefined && v !== null &&
+      (typeof v !== 'number' || !Number.isFinite(v) || v < 0)) ||
+      typeof minConfidence !== 'number' || !Number.isFinite(minConfidence) || minConfidence < 0 || minConfidence > 1) {
+    res.status(400).json({ ok: false, error: 'Invalid pot, bet or detection confidence' });
+    return;
+  }
   const finalPot     = clientPot  ?? 0;
   const finalBet     = clientBet  ?? 0;
   const finalPlayers = Math.max(2, Math.min(9, players));
@@ -204,7 +201,6 @@ router.post("/vision/scan-cards", async (req, res) => {
   const opponentProfile = getOpponentSummary();
   if (trigger) {
     const suppressReason =
-      boardCountSuspect          ? `board count ${validBoardStrings.length} not in {0,3,4,5}` :
       minConfidence < TELEGRAM_MIN_CONF ? `low confidence ${minConfidence.toFixed(2)} < ${TELEGRAM_MIN_CONF}` :
       null;
     if (suppressReason) {

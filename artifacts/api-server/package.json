@@ -18,7 +18,8 @@
     "express": "^5.2.1",
     "pino": "^9.14.0",
     "pino-http": "^10.5.0",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "@workspace/poker-engine": "workspace:*"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",
