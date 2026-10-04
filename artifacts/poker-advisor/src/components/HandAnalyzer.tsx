@@ -137,7 +137,7 @@ export function HandAnalyzer() {
   useEffect(() => {
     if (simTimeoutRef.current) clearTimeout(simTimeoutRef.current);
 
-    if (validHoleCards.length === 2) {
+    if (validHoleCards.length === 2 && [0, 3, 4, 5].includes(validBoardCards.length)) {
       setIsSimulating(true);
       simTimeoutRef.current = setTimeout(() => {
         const result = runMonteCarloSim(validHoleCards, validBoardCards, numPlayers, 5000);
@@ -263,7 +263,7 @@ export function HandAnalyzer() {
       recommendation = { action: 'FOLD', color: 'bg-red-700', text: pfAdvice.reason };
     }
   } else if (simResult) {
-    const winProb = simResult.winProb;
+    const winProb = simResult.equity;
     if (betToCall === 0) {
       if (winProb > 0.6) recommendation = { action: 'RAISE', color: 'bg-emerald-600', text: 'Strong equity. Build the pot.' };
       else recommendation = { action: 'CHECK', color: 'bg-zinc-500', text: 'Check and see.' };
@@ -640,8 +640,8 @@ export function HandAnalyzer() {
                 ) : simResult && betToCall > 0 ? (
                   <div className="flex justify-between mt-2 pt-2 border-t border-zinc-800">
                     <span className="text-zinc-400">Expected Value:</span>
-                    <span className={cn("font-bold", simResult.winProb > potOdds ? "text-emerald-400" : "text-red-400")}>
-                      {simResult.winProb > potOdds ? '+' : '-'}${Math.abs((simResult.winProb * (potSize + betToCall)) - betToCall).toFixed(2)}
+                    <span className={cn("font-bold", simResult.equity > potOdds ? "text-emerald-400" : "text-red-400")}>
+                      {simResult.equity > potOdds ? '+' : '-'}${Math.abs((simResult.equity * (potSize + betToCall)) - betToCall).toFixed(2)}
                     </span>
                   </div>
                 ) : null}

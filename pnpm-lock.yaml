@@ -176,6 +176,9 @@ importers:
       '@workspace/db':
         specifier: workspace:*
         version: link:../../lib/db
+      '@workspace/poker-engine':
+        specifier: workspace:*
+        version: link:../../lib/poker-engine
       cookie-parser:
         specifier: ^1.4.7
         version: 1.4.7
@@ -411,6 +414,9 @@ importers:
 
   artifacts/poker-advisor:
     dependencies:
+      '@workspace/poker-engine':
+        specifier: workspace:*
+        version: link:../../lib/poker-engine
       onnxruntime-web:
         specifier: ^1.27.0
         version: 1.27.0
@@ -650,6 +656,8 @@ importers:
       drizzle-kit:
         specifier: ^0.31.10
         version: 0.31.10
+
+  lib/poker-engine: {}
 
   scripts:
     devDependencies:

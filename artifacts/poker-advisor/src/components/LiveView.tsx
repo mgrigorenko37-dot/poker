@@ -183,7 +183,7 @@ export function LiveView() {
           {/* WIN PROBABILITY BAR */}
           <div className="px-4 py-3 bg-zinc-900 border-b border-zinc-800">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-xs text-zinc-500 uppercase tracking-wider">Вероятность победы</span>
+              <span className="text-xs text-zinc-500 uppercase tracking-wider">Доля банка · equity</span>
               <span className={cn(
                 'text-xl font-black',
                 analysis.equity > 0.6 ? 'text-emerald-400' :

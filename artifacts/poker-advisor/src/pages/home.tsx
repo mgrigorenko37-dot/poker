@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { EquityWorkspace } from '@/components/EquityWorkspace';
 import { HandAnalyzer } from '@/components/HandAnalyzer';
 import { PreflopChart } from '@/components/PreflopChart';
 import { HandHistory } from '@/components/HandHistory';
@@ -7,11 +8,11 @@ import { LiveView } from '@/components/LiveView';
 import { cn } from '@/lib/utils';
 import { useThemeProvider } from '@/hooks/use-theme';
 
-type Tab = 'analyzer' | 'screen' | 'live' | 'chart' | 'history';
+type Tab = 'equity' | 'analyzer' | 'screen' | 'live' | 'chart' | 'history';
 
 export default function Home() {
   useThemeProvider();
-  const [activeTab, setActiveTab] = useState<Tab>('analyzer');
+  const [activeTab, setActiveTab] = useState<Tab>('equity');
 
   return (
     <div className="min-h-[100dvh] bg-[#0d1117] text-zinc-100 flex flex-col font-mono selection:bg-emerald-900/50">
@@ -28,8 +29,9 @@ export default function Home() {
             </h1>
           </div>
 
-          <nav className="flex gap-0.5 bg-zinc-900 p-1 rounded-lg border border-zinc-800 overflow-x-auto">
+          <nav className="flex gap-0.5 bg-zinc-900 p-1 rounded-lg border border-zinc-800 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {([
+              { id: 'equity', label: 'Вероятность' },
               { id: 'analyzer', label: 'Analyzer' },
               { id: 'screen',   label: '🖥️ Экран' },
               { id: 'live',     label: '📱 Эфир' },
@@ -55,6 +57,7 @@ export default function Home() {
 
       {/* MAIN */}
       <main className="flex-1 flex flex-col">
+        {activeTab === 'equity' && <EquityWorkspace onScreen={() => setActiveTab('screen')} onLive={() => setActiveTab('live')} />}
         {activeTab === 'analyzer' && <div className="py-8"><HandAnalyzer /></div>}
         {activeTab === 'screen'   && <ScreenScan />}
         {activeTab === 'live'     && <LiveView />}

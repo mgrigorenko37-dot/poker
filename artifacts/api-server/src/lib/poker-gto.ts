@@ -661,7 +661,7 @@ export function getFullAdvice(
   stackBBs: number = 100,
   aggressorPosition: string = '',
 ): FullAdvice {
-  const w = simResult.winProb;
+  const w = simResult.equity;
   const isPreflop = boardCards.length === 0;
 
   const ev = evaluateHand(holeCards, boardCards);

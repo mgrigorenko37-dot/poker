@@ -114,7 +114,7 @@ function scoreHeroConnection(hole: Card[], board: Card[]): { score: 0 | 1 | 2 | 
     return { score: 0, note: '' };
   }
 
-  const boardRanks = new Set(board.map(c => c.rank));
+  const boardRanks = new Set<number>(board.map(c => c.rank));
   const boardSuits = board.map(c => c.suit);
 
   let score = 0;
@@ -158,8 +158,8 @@ function scoreHeroConnection(hole: Card[], board: Card[]): { score: 0 | 1 | 2 | 
   //     boardHits ≥ 1  (anchored to the board)
   //     holeHits  ≥ 1  (hero contributes at least one card)
   //     missing   == 1  (exactly one card to complete — OESD or gutshot)
-  const holeRanks    = new Set(hole.map(c => c.rank));
-  const boardRankSet = new Set(board.map(c => c.rank));
+  const holeRanks    = new Set<number>(hole.map(c => c.rank));
+  const boardRankSet = new Set<number>(board.map(c => c.rank));
   let straightDraw   = false;
   for (let lo = 2; lo <= 10 && !straightDraw; lo++) {
     let boardHits = 0;
